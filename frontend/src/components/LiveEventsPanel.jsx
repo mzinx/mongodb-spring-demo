@@ -14,6 +14,8 @@ const CHANNEL_LABELS = {
 export default function LiveEventsPanel({ events, onClear }) {
   const [filter, setFilter] = useState('all')
 
+  // /sync and /cmd always exist; private channels appear once announced.
+  const channels = Array.from(new Set(['/sync', '/cmd', ...events.map((e) => e.channel)]))
   const visible = filter === 'all' ? events : events.filter((e) => e.channel === filter)
 
   return (
@@ -30,8 +32,11 @@ export default function LiveEventsPanel({ events, onClear }) {
         <div className="row-actions">
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">all channels</option>
-            <option value="/sync">/sync</option>
-            <option value="/cmd">/cmd</option>
+            {channels.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </select>
           <button onClick={onClear}>Clear</button>
         </div>
@@ -40,7 +45,7 @@ export default function LiveEventsPanel({ events, onClear }) {
       <div className="feed">
         {visible.length === 0 && <p className="empty">No events yet.</p>}
         {visible.map((e) => (
-          <details key={e.id} className={`event channel-${e.channel.slice(1)}`} open={false}>
+          <details key={e.id} className={`event channel-${e.channel.slice(1).replace(/\//g, '-')}`} open={false}>
             <summary>
               <span className="tag">{e.channel}</span>
               <span className="event-title">{summarize(e)}</span>
@@ -58,6 +63,7 @@ function summarize(e) {
   const p = e.payload
   if (p && typeof p === 'object') {
     if (p.content?.type === 'REFRESH') return `REFRESH ${p.content.coll}`
+    if (p.content?.type === 'LISTEN') return `LISTEN ${p.content.target} (join private channel)`
     if (p.type) return `${p.type} → ${p.target ?? ''}`
   }
   return CHANNEL_LABELS[e.channel] ?? 'message'

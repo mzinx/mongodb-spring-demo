@@ -111,7 +111,12 @@ http://localhost:8080.
    `{"_ph": ...}` placeholder substitution.
 6. **Messaging** — send a message to `/push`; it is persisted in the TTL-indexed
    `_messages` collection and fanned out to the target destination *through a change
-   stream*.
+   stream*. The panel also demonstrates a **private channel** protocol built on the
+   generic `Message.target`: "Create private channel" announces
+   `{type: "LISTEN", target: "/private/<id>"}` on `/cmd`, every currently connected
+   client subscribes to that destination, and subsequent messages sent to it reach
+   only those subscribers (open a second tab before creating the channel, and a
+   third one after, to see the difference).
 7. **Multi-instance modes** — start a second backend instance to see discovery and the
    coordination modes in action:
 

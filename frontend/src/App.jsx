@@ -17,6 +17,8 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [events, setEvents] = useState([])
   const [instances, setInstances] = useState([])
+  const [privateChannels, setPrivateChannels] = useState([])
+  const privateChannelsRef = useRef(new Set())
   const counter = useRef(0)
 
   const addEvent = useCallback((channel, body) => {
@@ -29,14 +31,40 @@ export default function App() {
     setEvents((prev) =>
       [{ id: ++counter.current, channel, at: new Date(), payload }, ...prev].slice(0, MAX_EVENTS),
     )
+    return payload
   }, [])
 
+  // Private channel protocol: a LISTEN command received on /cmd instructs
+  // every connected client to subscribe to the announced destination, forming
+  // a private channel (clients connecting later never subscribe to it).
+  const subscribePrivate = useCallback(
+    (dest) => {
+      if (typeof dest !== 'string' || !dest.startsWith('/') || privateChannelsRef.current.has(dest)) return
+      privateChannelsRef.current.add(dest)
+      setPrivateChannels(Array.from(privateChannelsRef.current))
+      if (stompClient.connected) stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body))
+    },
+    [addEvent],
+  )
+
+  const handleMessage = useCallback(
+    (channel, body) => {
+      const payload = addEvent(channel, body)
+      if (channel === '/cmd' && payload?.content?.type === 'LISTEN') subscribePrivate(payload.content.target)
+    },
+    [addEvent, subscribePrivate],
+  )
+
   // STOMP lifecycle: subscribe to the live data (/sync) and command (/cmd)
-  // destinations exposed via mongodb-spring-message-queuing.
+  // destinations exposed via mongodb-spring-message-queuing, plus any private
+  // channels announced through LISTEN commands (re-subscribed on reconnect).
   useEffect(() => {
     stompClient.onConnect = () => {
       setConnected(true)
-      CHANNELS.forEach((dest) => stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body)))
+      CHANNELS.forEach((dest) => stompClient.subscribe(dest, (msg) => handleMessage(dest, msg.body)))
+      privateChannelsRef.current.forEach((dest) =>
+        stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body)),
+      )
     }
     stompClient.onWebSocketClose = () => setConnected(false)
     stompClient.activate()
@@ -44,7 +72,7 @@ export default function App() {
       stompClient.deactivate()
       setConnected(false)
     }
-  }, [addEvent])
+  }, [addEvent, handleMessage])
 
   // Poll the discovery instance registry.
   useEffect(() => {
@@ -93,7 +121,7 @@ export default function App() {
         {tab === 'Dashboard' && <DashboardPanel events={events} />}
         {tab === 'Live Events' && <LiveEventsPanel events={events} onClear={() => setEvents([])} />}
         {tab === 'Aggregations' && <AggregationPanel />}
-        {tab === 'Messaging' && <MessagingPanel events={events} />}
+        {tab === 'Messaging' && <MessagingPanel events={events} privateChannels={privateChannels} />}
       </main>
     </div>
   )
