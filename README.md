@@ -16,10 +16,10 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 │  frontend (React + Vite)  │  REST  │  backend (Spring Boot 4)                  │
 │  http://localhost:5173    │───────▶│  http://localhost:8080                    │
 │                           │        │                                           │
-│  Streams / Data /         │ STOMP  │  REST API  ── ChangeStreamConfigService   │
-│  Aggregations / Messaging │  /ws   │            ── ChangeStreamManager (status)│
-│  Live event feed          │◀──────▶│  /ws STOMP ── message-queuing module      │
-└───────────────────────────┘        │  eventRelay listener ──▶ /events          │
+│  Streams / Orders /       │ STOMP  │  REST API  ── ChangeStreamConfigService   │
+│  Dashboard / Aggregations │  /ws   │            ── ChangeStreamManager (status)│
+│  Messaging / Live events  │◀──────▶│  /ws STOMP ── message-queuing module      │
+└───────────────────────────┘        │  orderSummaryListener ─▶ orderSummaries   │
                                      └──────────────────┬────────────────────────┘
                                                         │ change streams, heartbeats,
                                                         │ configs, resume tokens
@@ -30,8 +30,9 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 - **backend/** — Spring Boot 4 service consuming all four libraries. It only adds thin
   REST controllers on top of the libraries' public APIs plus two demo
-  `ChangeStreamListener` beans (`eventRelay` relays events to the `/events` STOMP
-  destination, `consoleLog` just logs).
+  `ChangeStreamListener` beans: `orderSummaryListener` precomputes the daily order
+  summary collection (`orderSummaries`) by running the `orders-daily-summary`
+  pipeline template with `$merge`, and `consoleLog` just logs.
 - **frontend/** — React SPA (Vite). In dev mode it proxies `/api` and `/ws` to the backend.
 
 ## Prerequisites
@@ -80,29 +81,38 @@ http://localhost:8080.
 
 ## Demo walkthrough
 
-1. **Streams** — on first start a stream `orders-demo` is seeded (collection `orders`,
-   listener `eventRelay`). Create your own stream: pick a mode
-   (`BOARDCAST` / `AUTO_RECOVER` / `AUTO_SCALE`), a resume strategy, an optional
-   aggregation pipeline (e.g. `[{"$match": {"operationType": "insert"}}]`) and a
-   listener bean. Definitions are persisted to `_changeStreamConfigs`; the library's
-   reconciler starts/restarts/stops streams within ~10 s
+1. **Streams** — on first start a stream `order-summary` is seeded (collection
+   `orders`, mode `AUTO_RECOVER`, listener `orderSummaryListener`). Create your own
+   stream: pick a mode (`BOARDCAST` / `AUTO_RECOVER` / `AUTO_SCALE`), a resume
+   strategy, an optional aggregation pipeline (e.g.
+   `[{"$match": {"operationType": "insert"}}]`) and a listener bean. Definitions are
+   persisted to `_changeStreamConfigs`; the library's reconciler
+   starts/restarts/stops streams within ~10 s
    (`change-stream.config-refresh-interval`). The table shows live runtime status
    straight from `ChangeStreamManager`: running flag, leader + fencing term, member
    instances and epoch.
-2. **Data Generator** — insert/update/delete random documents in the `orders`
-   collection to produce change events.
-3. **Live Events** — a WebSocket (STOMP) feed of:
-   - `/events`: events relayed by the demo `eventRelay` listener,
-   - `/sync`: live data push from the message-queuing,
-   - `/cmd`: commands from the message-queuing
-     module (it watches `orders`,`products` via `messaging.watch-collections`).
-4. **Aggregations** — edit/save pipeline templates and run them. Try the seeded
+2. **Orders** — paginated view of the `orders` collection (paged through the
+   aggregation library's `$facet` pagination), with generator buttons to
+   insert/update/delete random documents. The message-queuing live-data service
+   watches `orders` and broadcasts a REFRESH command on `/cmd` for every change, so
+   the page updates in real time — try writing from `mongosh` while it's open.
+3. **Dashboard** — daily order summary (orders, revenue, avg value, per-status
+   counts). It is *precomputed*: the `order-summary` change stream triggers
+   `orderSummaryListener`, which re-runs the `orders-daily-summary` pipeline template
+   (`$merge` into `orderSummaries`, with a `{"_ph": "runId"}` variable). Because the
+   stream runs in `AUTO_RECOVER` mode, exactly one instance (the leader) recomputes.
+   `orderSummaries` is also in `messaging.watch-collections`, so the dashboard
+   refreshes live as summaries change.
+4. **Live Events** — the raw WebSocket (STOMP) feed:
+   - `/sync`: changed documents from watched collections (`orders`, `orderSummaries`),
+   - `/cmd`: REFRESH commands and messaging ACK/RES.
+5. **Aggregations** — edit/save pipeline templates and run them. Try the seeded
    `orders-by-status` template with variables `{"status": "PENDING"}` to see
    `{"_ph": ...}` placeholder substitution.
-5. **Messaging** — send a message to `/push`; it is persisted in the TTL-indexed
+6. **Messaging** — send a message to `/push`; it is persisted in the TTL-indexed
    `_messages` collection and fanned out to the target destination *through a change
    stream*.
-6. **Multi-instance modes** — start a second backend instance to see discovery and the
+7. **Multi-instance modes** — start a second backend instance to see discovery and the
    coordination modes in action:
 
    ```bash
@@ -126,7 +136,10 @@ http://localhost:8080.
 | GET | `/api/streams/{id}/status` | Runtime status of one stream |
 | GET | `/api/streams/listeners` | Available `ChangeStreamListener` bean names |
 | GET | `/api/instances` | Live instances (discovery heartbeats) |
-| GET/POST | `/api/data/orders`, `/insert`, `/update-random`, `/delete-random` | Test data generator |
+| GET | `/api/data/orders?page=&size=` | Paginated orders (aggregation library `$facet` pagination) |
+| POST | `/api/data/orders/insert`, `/update-random`, `/delete-random` | Test data generator |
+| GET | `/api/summary` | Precomputed daily order summaries |
+| POST | `/api/summary/recompute` | Force a summary recompute |
 | GET/PUT/DELETE | `/api/pipelines`, `/api/pipelines/{name}` | Aggregation pipeline templates |
 | POST | `/api/aggregations/run` | Run a pipeline (inline stages or saved template + variables) |
 

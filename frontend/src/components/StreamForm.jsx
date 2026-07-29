@@ -22,7 +22,7 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
     maxAwaitTime: initial?.maxAwaitTime ?? '',
     fullDocument: initial?.fullDocument ?? '',
     fullDocumentBeforeChange: initial?.fullDocumentBeforeChange ?? '',
-    listener: initial?.listener ?? 'eventRelay',
+    listener: initial?.listener ?? (listeners.includes('consoleLog') ? 'consoleLog' : listeners[0] ?? ''),
     enabled: initial?.enabled ?? true,
     pipeline: JSON.stringify(initial?.pipeline ?? [], null, 2),
   })

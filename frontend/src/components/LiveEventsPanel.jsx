@@ -1,7 +1,6 @@
 import { useState } from 'react'
 
 const CHANNEL_LABELS = {
-  '/events': 'stream event (eventRelay listener)',
   '/sync': 'live data (message-queuing)',
   '/cmd': 'command (message-queuing)',
 }
@@ -9,9 +8,8 @@ const CHANNEL_LABELS = {
 /**
  * Live WebSocket feed. Events arrive over the STOMP endpoint provided by
  * mongodb-spring-message-queuing:
- *  - /events : change stream events relayed by the demo `eventRelay` listener
- *  - /sync   : documents from collections in `messaging.watch-collections`
- *  - /cmd    : command messages
+ *  - /sync : changed documents from collections in `messaging.watch-collections`
+ *  - /cmd  : REFRESH commands and ACK/RES messages
  */
 export default function LiveEventsPanel({ events, onClear }) {
   const [filter, setFilter] = useState('all')
@@ -24,14 +22,14 @@ export default function LiveEventsPanel({ events, onClear }) {
         <div>
           <h2>Live events</h2>
           <p className="hint">
-            Insert/update/delete data (see <strong>Data Generator</strong>) while a stream targeting the{' '}
-            <code>eventRelay</code> listener is running, and watch events arrive here in real time.
+            Raw feed of the message-queuing WebSocket destinations. Insert/update/delete orders (see{' '}
+            <strong>Orders</strong>) and watch the live-data service push the changed documents
+            (<code>/sync</code>) and refresh commands (<code>/cmd</code>) in real time.
           </p>
         </div>
         <div className="row-actions">
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">all channels</option>
-            <option value="/events">/events</option>
             <option value="/sync">/sync</option>
             <option value="/cmd">/cmd</option>
           </select>
@@ -59,9 +57,8 @@ export default function LiveEventsPanel({ events, onClear }) {
 function summarize(e) {
   const p = e.payload
   if (p && typeof p === 'object') {
-    if (e.channel === '/events')
-      return `${p.operationType ?? '?'} on ${p.database ?? ''}.${p.collection ?? '?'}`
-    return `${p.t ?? p.target ?? ''}`
+    if (p.content?.type === 'REFRESH') return `REFRESH ${p.content.coll}`
+    if (p.type) return `${p.type} → ${p.target ?? ''}`
   }
   return CHANNEL_LABELS[e.channel] ?? 'message'
 }

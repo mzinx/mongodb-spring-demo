@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { stompClient } from './stomp.js'
 import StreamsPanel from './components/StreamsPanel.jsx'
+import OrdersPanel from './components/OrdersPanel.jsx'
+import DashboardPanel from './components/DashboardPanel.jsx'
 import LiveEventsPanel from './components/LiveEventsPanel.jsx'
-import DataPanel from './components/DataPanel.jsx'
 import AggregationPanel from './components/AggregationPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
 
-const TABS = ['Streams', 'Live Events', 'Data Generator', 'Aggregations', 'Messaging']
-const CHANNELS = ['/events', '/sync', '/cmd']
+const TABS = ['Streams', 'Orders', 'Dashboard', 'Live Events', 'Aggregations', 'Messaging']
+const CHANNELS = ['/sync', '/cmd']
 const MAX_EVENTS = 300
 
 export default function App() {
@@ -30,8 +31,8 @@ export default function App() {
     )
   }, [])
 
-  // STOMP lifecycle: subscribe to the relay (/events), live data (/sync) and
-  // command (/cmd) destinations exposed via mongodb-spring-message-queuing.
+  // STOMP lifecycle: subscribe to the live data (/sync) and command (/cmd)
+  // destinations exposed via mongodb-spring-message-queuing.
   useEffect(() => {
     stompClient.onConnect = () => {
       setConnected(true)
@@ -88,8 +89,9 @@ export default function App() {
 
       <main className="content">
         {tab === 'Streams' && <StreamsPanel />}
+        {tab === 'Orders' && <OrdersPanel events={events} />}
+        {tab === 'Dashboard' && <DashboardPanel events={events} />}
         {tab === 'Live Events' && <LiveEventsPanel events={events} onClear={() => setEvents([])} />}
-        {tab === 'Data Generator' && <DataPanel />}
         {tab === 'Aggregations' && <AggregationPanel />}
         {tab === 'Messaging' && <MessagingPanel events={events} />}
       </main>
