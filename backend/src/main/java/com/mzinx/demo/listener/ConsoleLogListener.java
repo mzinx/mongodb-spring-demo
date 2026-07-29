@@ -19,7 +19,7 @@ public class ConsoleLogListener implements ChangeStreamListener<Document> {
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
     @Override
-    public void execute(ChangeStreamDocument<Document> event) {
+    public void onEvent(ChangeStreamDocument<Document> event) {
         logger.info("[consoleLog] {} on {} key={}",
                 event.getOperationType() != null ? event.getOperationType().getValue() : "?",
                 event.getNamespace(),

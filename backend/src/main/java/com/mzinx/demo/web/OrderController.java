@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import org.bson.Document;
-import org.bson.types.ObjectId;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -21,7 +20,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Updates;
-import com.mzinx.mongodb.aggregation.model.Aggregation;
+import com.mzinx.mongodb.aggregation.model.AggregationSpec;
 import com.mzinx.mongodb.aggregation.service.AggregationService;
 
 /**
@@ -33,7 +32,7 @@ import com.mzinx.mongodb.aggregation.service.AggregationService;
  */
 @RestController
 @RequestMapping("/api/data/orders")
-public class DataController {
+public class OrderController {
 
     static final String COLLECTION = "orders";
 
@@ -44,7 +43,7 @@ public class DataController {
     private final MongoTemplate mongoTemplate;
     private final AggregationService aggregationService;
 
-    DataController(MongoTemplate mongoTemplate, AggregationService aggregationService) {
+    OrderController(MongoTemplate mongoTemplate, AggregationService aggregationService) {
         this.mongoTemplate = mongoTemplate;
         this.aggregationService = aggregationService;
     }
@@ -58,9 +57,9 @@ public class DataController {
     public Map<String, Object> list(@RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size) {
         Page<Document> result = aggregationService.execute(
-                Aggregation.of(COLLECTION, List.of(new Document("$sort", new Document("createdAt", -1)))),
+                AggregationSpec.of(COLLECTION, List.of(new Document("$sort", new Document("createdAt", -1)))),
                 PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 50)));
-        result.getContent().forEach(DataController::stringifyId);
+        result.getContent().forEach(Documents::stringifyId);
         return Map.of(
                 "content", result.getContent(),
                 "page", result.getNumber(),
@@ -123,11 +122,5 @@ public class DataController {
 
     private static <T> T random(List<T> values) {
         return values.get(ThreadLocalRandom.current().nextInt(values.size()));
-    }
-
-    private static void stringifyId(Document doc) {
-        Object id = doc.get("_id");
-        if (id instanceof ObjectId objectId)
-            doc.put("_id", objectId.toHexString());
     }
 }

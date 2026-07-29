@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 import com.mzinx.mongodb.aggregation.dao.PipelineRepository;
-import com.mzinx.mongodb.aggregation.model.Aggregation;
+import com.mzinx.mongodb.aggregation.model.AggregationSpec;
 import com.mzinx.mongodb.aggregation.service.AggregationService;
 import com.mzinx.mongodb.changestream.listener.ChangeStreamListener;
 
@@ -55,7 +55,7 @@ public class OrderSummaryListener implements ChangeStreamListener<Document> {
     }
 
     @Override
-    public void execute(ChangeStreamDocument<Document> event) {
+    public void onEvent(ChangeStreamDocument<Document> event) {
         logger.info("Order change detected ({}), recomputing daily summary",
                 event.getOperationType() != null ? event.getOperationType().getValue() : "?");
         recompute();
@@ -64,14 +64,14 @@ public class OrderSummaryListener implements ChangeStreamListener<Document> {
     /** Recomputes the whole {@code orderSummaries} collection. */
     public synchronized void recompute() {
         List<Document> stages = pipelineRepository.findById(PIPELINE_NAME)
-                .map(template -> template.getAggs().stream().map(Document::new).toList())
+                .map(template -> template.getStages().stream().map(Document::new).toList())
                 .orElse(null);
         if (stages == null) {
             logger.warn("Pipeline template '{}' not found, skipping summary recompute", PIPELINE_NAME);
             return;
         }
         long runId = System.currentTimeMillis();
-        aggregationService.execute(Aggregation.of(SOURCE_COLLECTION, stages), Map.of("runId", runId));
+        aggregationService.execute(AggregationSpec.of(SOURCE_COLLECTION, stages), Map.of("runId", runId));
         // Drop summaries not touched by this run (days whose orders were all deleted).
         mongoTemplate.getCollection(SUMMARY_COLLECTION).deleteMany(Filters.ne("runId", runId));
     }

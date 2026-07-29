@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.bson.Document;
-import org.bson.types.ObjectId;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.mzinx.demo.web.dto.AggregationRequest;
 import com.mzinx.mongodb.aggregation.dao.PipelineRepository;
-import com.mzinx.mongodb.aggregation.model.Aggregation;
+import com.mzinx.mongodb.aggregation.model.AggregationSpec;
 import com.mzinx.mongodb.aggregation.model.PipelineTemplate;
 import com.mzinx.mongodb.aggregation.service.AggregationService;
 
@@ -45,7 +44,7 @@ public class PipelineController {
 
     @PutMapping("/pipelines/{name}")
     public PipelineTemplate save(@PathVariable String name, @RequestBody List<Map<String, Object>> stages) {
-        return pipelineRepository.save(PipelineTemplate.builder().name(name).aggs(stages).build());
+        return pipelineRepository.save(PipelineTemplate.builder().name(name).stages(stages).build());
     }
 
     @DeleteMapping("/pipelines/{name}")
@@ -60,7 +59,7 @@ public class PipelineController {
         List<Map<String, Object>> stages = request.stages();
         if ((stages == null || stages.isEmpty()) && request.pipelineName() != null)
             stages = pipelineRepository.findById(request.pipelineName())
-                    .map(PipelineTemplate::getAggs)
+                    .map(PipelineTemplate::getStages)
                     .orElse(null);
         if (stages == null)
             return ResponseEntity.badRequest()
@@ -70,14 +69,8 @@ public class PipelineController {
 
         List<Document> pipeline = stages.stream().map(Document::new).toList();
         List<Document> results = aggregationService.execute(
-                Aggregation.of(request.collectionName(), pipeline), request.variables());
-        results.forEach(PipelineController::stringifyId);
+                AggregationSpec.of(request.collectionName(), pipeline), request.variables());
+        results.forEach(Documents::stringifyId);
         return ResponseEntity.ok(results);
-    }
-
-    private static void stringifyId(Document doc) {
-        Object id = doc.get("_id");
-        if (id instanceof ObjectId objectId)
-            doc.put("_id", objectId.toHexString());
     }
 }

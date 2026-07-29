@@ -57,7 +57,7 @@ public class DemoDataSeeder implements ApplicationRunner {
             logger.info("Seeding pipeline template '{}'", OrderSummaryListener.PIPELINE_NAME);
             pipelineRepository.save(PipelineTemplate.builder()
                     .name(OrderSummaryListener.PIPELINE_NAME)
-                    .aggs(List.of(
+                    .stages(List.of(
                             Map.of("$group", Map.of(
                                     "_id", Map.of(
                                             "day", Map.of("$dateToString",
@@ -95,7 +95,7 @@ public class DemoDataSeeder implements ApplicationRunner {
                     // only the elected leader recomputes; failover is automatic
                     .mode(Mode.AUTO_RECOVER)
                     // resume missed order changes after a restart
-                    .resumeStrategy(ResumeStrategy.BATCH)
+                    .resumeStrategy(ResumeStrategy.PER_BATCH)
                     .pipeline(List.of())
                     .listener(OrderSummaryListener.BEAN_NAME)
                     .enabled(true)
@@ -106,7 +106,7 @@ public class DemoDataSeeder implements ApplicationRunner {
             logger.info("Seeding demo pipeline template 'orders-summary'");
             pipelineRepository.save(PipelineTemplate.builder()
                     .name("orders-summary")
-                    .aggs(List.of(
+                    .stages(List.of(
                             Map.of("$group", Map.of(
                                     "_id", "$status",
                                     "count", Map.of("$sum", 1),
@@ -119,7 +119,7 @@ public class DemoDataSeeder implements ApplicationRunner {
             logger.info("Seeding demo pipeline template 'orders-by-status'");
             pipelineRepository.save(PipelineTemplate.builder()
                     .name("orders-by-status")
-                    .aggs(List.of(
+                    .stages(List.of(
                             // {"_ph": "status"} is replaced with the value of the
                             // "status" variable at execution time.
                             Map.of("$match", Map.of("status", Map.of("_ph", "status"))),

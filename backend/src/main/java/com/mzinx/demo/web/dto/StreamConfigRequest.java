@@ -22,7 +22,7 @@ public record StreamConfigRequest(
         Integer batchSize,
         Long maxAwaitTime,
         ResumeStrategy resumeStrategy,
-        Long saveTokenInterval,
+        Long checkpointInterval,
         FullDocument fullDocument,
         FullDocumentBeforeChange fullDocumentBeforeChange,
         List<Map<String, Object>> pipeline,
@@ -33,11 +33,11 @@ public record StreamConfigRequest(
         return ChangeStreamConfig.builder()
                 .id(id)
                 .collectionName(collectionName == null || collectionName.isBlank() ? null : collectionName)
-                .mode(mode == null ? Mode.BOARDCAST : mode)
+                .mode(mode == null ? Mode.BROADCAST : mode)
                 .batchSize(batchSize)
                 .maxAwaitTime(maxAwaitTime)
                 .resumeStrategy(resumeStrategy == null ? ResumeStrategy.NONE : resumeStrategy)
-                .saveTokenInterval(saveTokenInterval)
+                .checkpointInterval(checkpointInterval)
                 .fullDocument(fullDocument)
                 .fullDocumentBeforeChange(fullDocumentBeforeChange)
                 .pipeline(pipeline == null ? List.of() : pipeline.stream().map(Document::new).toList())

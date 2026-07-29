@@ -16,13 +16,13 @@ export default function StreamsPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [cfg, st, ls] = await Promise.all([
+      const [config, status, ls] = await Promise.all([
         api.get('/api/streams'),
         api.get('/api/streams/status'),
         api.get('/api/streams/listeners'),
       ])
-      setConfigs(cfg)
-      setStatuses(st)
+      setConfigs(config)
+      setStatuses(status)
       setListeners(ls)
       setError(null)
     } catch (err) {
@@ -96,34 +96,34 @@ export default function StreamsPanel() {
           </tr>
         </thead>
         <tbody>
-          {configs.map((cfg) => {
-            const st = statusById[cfg.id]
+          {configs.map((config) => {
+            const status = statusById[config.id]
             return (
-              <tr key={cfg.id}>
-                <td className="mono">{cfg.id}</td>
-                <td className="mono">{cfg.collectionName ?? <em>whole db</em>}</td>
-                <td>{cfg.mode}</td>
-                <td className="mono">{cfg.listener}</td>
-                <td>{cfg.resumeStrategy}</td>
+              <tr key={config.id}>
+                <td className="mono">{config.id}</td>
+                <td className="mono">{config.collectionName ?? <em>whole db</em>}</td>
+                <td>{config.mode}</td>
+                <td className="mono">{config.listener}</td>
+                <td>{config.resumeStrategy}</td>
                 <td>
-                  <StateBadge enabled={cfg.enabled} running={st?.running} />
+                  <StateBadge enabled={config.enabled} running={status?.running} />
                 </td>
                 <td className="mono">
-                  {st?.leader ? `${st.leader} (t${st.term})` : '—'}
+                  {status?.leader ? `${status.leader} (t${status.term})` : '—'}
                 </td>
                 <td className="mono">
-                  {st?.instances?.length ? `${st.instances.join(', ')} (e${st.epoch})` : '—'}
+                  {status?.instances?.length ? `${status.instances.join(', ')} (e${status.epoch})` : '—'}
                 </td>
                 <td className="row-actions">
-                  {cfg.enabled ? (
-                    <button onClick={() => action(() => api.post(`/api/streams/${cfg.id}/stop`))}>Stop</button>
+                  {config.enabled ? (
+                    <button onClick={() => action(() => api.post(`/api/streams/${config.id}/stop`))}>Stop</button>
                   ) : (
-                    <button onClick={() => action(() => api.post(`/api/streams/${cfg.id}/start`))}>Start</button>
+                    <button onClick={() => action(() => api.post(`/api/streams/${config.id}/start`))}>Start</button>
                   )}
-                  <button onClick={() => setEditing(cfg)}>Edit</button>
+                  <button onClick={() => setEditing(config)}>Edit</button>
                   <button
                     className="danger"
-                    onClick={() => confirm(`Delete stream "${cfg.id}"?`) && action(() => api.del(`/api/streams/${cfg.id}`))}
+                    onClick={() => confirm(`Delete stream "${config.id}"?`) && action(() => api.del(`/api/streams/${config.id}`))}
                   >
                     Delete
                   </button>
@@ -131,20 +131,20 @@ export default function StreamsPanel() {
               </tr>
             )
           })}
-          {internalStatuses.map((st) => (
-            <tr key={st.id} className="muted">
+          {internalStatuses.map((status) => (
+            <tr key={status.id} className="muted">
               <td className="mono">
-                {st.id} <span className="tag">internal</span>
+                {status.id} <span className="tag">internal</span>
               </td>
-              <td className="mono">{st.collectionName ?? <em>whole db</em>}</td>
-              <td>{st.mode}</td>
-              <td className="mono">{st.listener}</td>
-              <td>{st.resumeStrategy}</td>
+              <td className="mono">{status.collectionName ?? <em>whole db</em>}</td>
+              <td>{status.mode}</td>
+              <td className="mono">{status.listener}</td>
+              <td>{status.resumeStrategy}</td>
               <td>
-                <StateBadge enabled running={st.running} />
+                <StateBadge enabled running={status.running} />
               </td>
-              <td className="mono">{st.leader ? `${st.leader} (t${st.term})` : '—'}</td>
-              <td className="mono">{st.instances?.length ? `${st.instances.join(', ')} (e${st.epoch})` : '—'}</td>
+              <td className="mono">{status.leader ? `${status.leader} (t${status.term})` : '—'}</td>
+              <td className="mono">{status.instances?.length ? `${status.instances.join(', ')} (e${status.epoch})` : '—'}</td>
               <td />
             </tr>
           ))}

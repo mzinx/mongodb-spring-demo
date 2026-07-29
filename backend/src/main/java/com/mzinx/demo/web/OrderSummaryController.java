@@ -22,12 +22,12 @@ import com.mzinx.demo.listener.OrderSummaryListener;
  */
 @RestController
 @RequestMapping("/api/summary")
-public class SummaryController {
+public class OrderSummaryController {
 
     private final MongoTemplate mongoTemplate;
     private final OrderSummaryListener orderSummaryListener;
 
-    SummaryController(MongoTemplate mongoTemplate, OrderSummaryListener orderSummaryListener) {
+    OrderSummaryController(MongoTemplate mongoTemplate, OrderSummaryListener orderSummaryListener) {
         this.mongoTemplate = mongoTemplate;
         this.orderSummaryListener = orderSummaryListener;
     }

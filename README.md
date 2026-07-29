@@ -83,7 +83,7 @@ http://localhost:8080.
 
 1. **Streams** — on first start a stream `order-summary` is seeded (collection
    `orders`, mode `AUTO_RECOVER`, listener `orderSummaryListener`). Create your own
-   stream: pick a mode (`BOARDCAST` / `AUTO_RECOVER` / `AUTO_SCALE`), a resume
+   stream: pick a mode (`BROADCAST` / `AUTO_RECOVER` / `AUTO_SCALE`), a resume
    strategy, an optional aggregation pipeline (e.g.
    `[{"$match": {"operationType": "insert"}}]`) and a listener bean. Definitions are
    persisted to `_changeStreamConfigs`; the library's reconciler

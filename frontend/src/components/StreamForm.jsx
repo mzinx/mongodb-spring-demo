@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { api } from '../api.js'
 
-const MODES = ['BOARDCAST', 'AUTO_RECOVER', 'AUTO_SCALE']
-const RESUME_STRATEGIES = ['NONE', 'EVERY', 'BATCH', 'TIME']
+const MODES = ['BROADCAST', 'AUTO_RECOVER', 'AUTO_SCALE']
+const RESUME_STRATEGIES = ['NONE', 'PER_EVENT', 'PER_BATCH', 'INTERVAL']
 const FULL_DOCUMENT = ['', 'DEFAULT', 'UPDATE_LOOKUP', 'WHEN_AVAILABLE', 'REQUIRED']
 const FULL_DOCUMENT_BEFORE_CHANGE = ['', 'DEFAULT', 'OFF', 'WHEN_AVAILABLE', 'REQUIRED']
 
@@ -15,9 +15,9 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
   const [form, setForm] = useState({
     id: initial?.id ?? '',
     collectionName: initial?.collectionName ?? '',
-    mode: initial?.mode ?? 'BOARDCAST',
+    mode: initial?.mode ?? 'BROADCAST',
     resumeStrategy: initial?.resumeStrategy ?? 'NONE',
-    saveTokenInterval: initial?.saveTokenInterval ?? '',
+    checkpointInterval: initial?.checkpointInterval ?? '',
     batchSize: initial?.batchSize ?? '',
     maxAwaitTime: initial?.maxAwaitTime ?? '',
     fullDocument: initial?.fullDocument ?? '',
@@ -50,7 +50,7 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
         collectionName: form.collectionName.trim() || null,
         mode: form.mode,
         resumeStrategy: form.resumeStrategy,
-        saveTokenInterval: form.saveTokenInterval === '' ? null : Number(form.saveTokenInterval),
+        checkpointInterval: form.checkpointInterval === '' ? null : Number(form.checkpointInterval),
         batchSize: form.batchSize === '' ? null : Number(form.batchSize),
         maxAwaitTime: form.maxAwaitTime === '' ? null : Number(form.maxAwaitTime),
         fullDocument: form.fullDocument || null,
@@ -104,10 +104,10 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
             ))}
           </select>
         </label>
-        {form.resumeStrategy === 'TIME' && (
+        {form.resumeStrategy === 'INTERVAL' && (
           <label>
-            Save token interval (ms)
-            <input type="number" value={form.saveTokenInterval} onChange={set('saveTokenInterval')} placeholder="60000" />
+            Checkpoint interval (ms)
+            <input type="number" value={form.checkpointInterval} onChange={set('checkpointInterval')} placeholder="60000" />
           </label>
         )}
         <label>
