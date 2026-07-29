@@ -5,7 +5,7 @@ import { pushMessage } from '../stomp.js'
  * mongodb-spring-message-queuing demo: publishes a message to the /push
  * STOMP endpoint. The backend persists it to the `_messages` collection and a
  * change stream on that collection fans it out to subscribers of the target
- * destination — so the ACK and the RES appearing under Live Events actually
+ * destination — so the Live Events actually
  * travelled through MongoDB.
  */
 export default function MessagingPanel({ events }) {
@@ -17,7 +17,7 @@ export default function MessagingPanel({ events }) {
   const send = () => {
     setError(null)
     try {
-      pushMessage({ type: 'REQ', target, content: JSON.parse(content) })
+      pushMessage({ target, content: JSON.parse(content) })
       setSentAt(new Date())
     } catch (err) {
       setError(`Invalid content JSON: ${err.message}`)
@@ -29,7 +29,7 @@ export default function MessagingPanel({ events }) {
   return (
     <div className="panel split">
       <div className="card">
-        <h3>Send message (REQ → /push)</h3>
+        <h3>Send message (/push)</h3>
         <p className="hint">
           Flow: UI → STOMP <code>/push</code> → persisted in <code>_messages</code> (TTL-indexed) → change
           stream (<code>message-service</code>) → broadcast to subscribers of the target destination.
