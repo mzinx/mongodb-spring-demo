@@ -61,7 +61,7 @@ function summarize(e) {
   if (p && typeof p === 'object') {
     if (e.channel === '/events')
       return `${p.operationType ?? '?'} on ${p.database ?? ''}.${p.collection ?? '?'}`
-    if (p.type) return `${p.type} → ${p.t ?? p.target ?? ''}`
+    return `${p.t ?? p.target ?? ''}`
   }
   return CHANNEL_LABELS[e.channel] ?? 'message'
 }

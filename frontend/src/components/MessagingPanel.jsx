@@ -10,6 +10,7 @@ import { pushMessage } from '../stomp.js'
  */
 export default function MessagingPanel({ events }) {
   const [target, setTarget] = useState('/cmd')
+  //TODO: design a message type that instruct the client which received this message to listen on a specific target (private channel)
   const [content, setContent] = useState('{\n  "type": "NOTIFICATION",\n  "message": "Hello from the demo UI"\n}')
   const [error, setError] = useState(null)
   const [sentAt, setSentAt] = useState(null)
@@ -62,7 +63,7 @@ export default function MessagingPanel({ events }) {
           {related.map((e) => (
             <details key={e.id} className="event channel-cmd">
               <summary>
-                <span className="tag">{e.payload?.type ?? 'message'}</span>
+                <span className="tag">{e.payload?.content?.type ?? 'message'}</span>
                 <span className="event-time">{e.at.toLocaleTimeString()}</span>
               </summary>
               <pre>{JSON.stringify(e.payload, null, 2)}</pre>
