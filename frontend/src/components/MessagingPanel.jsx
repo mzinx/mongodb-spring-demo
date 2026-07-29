@@ -56,7 +56,7 @@ export default function MessagingPanel({ events }) {
 
       <div className="card">
         <h3>Recent /cmd messages</h3>
-        <p className="hint">Expect an ACK (direct) followed by a RES (delivered through the MongoDB queue).</p>
+        <p className="hint">Expect a message delivered through the MongoDB queue.</p>
         <div className="feed">
           {related.length === 0 && <p className="empty">Nothing received yet.</p>}
           {related.map((e) => (

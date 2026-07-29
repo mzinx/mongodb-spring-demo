@@ -11,7 +11,7 @@ const CHANNEL_LABELS = {
  * mongodb-spring-message-queuing:
  *  - /events : change stream events relayed by the demo `eventRelay` listener
  *  - /sync   : documents from collections in `messaging.watch-collections`
- *  - /cmd    : command/ACK/RES messages
+ *  - /cmd    : command messages
  */
 export default function LiveEventsPanel({ events, onClear }) {
   const [filter, setFilter] = useState('all')

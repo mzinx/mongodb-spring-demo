@@ -6,7 +6,7 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 |---|---|
 | [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | Web UI to create / configure / start / stop change streams, live runtime status (mode, leader, term, epoch, members) |
 | [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
-| [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`, `/cmd`) and MongoDB-backed message queue demo |
+| [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
 | [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline template CRUD (`_pipelines`) and execution with `{"_ph": "variable"}` placeholder substitution |
 
 ## Architecture
@@ -93,14 +93,15 @@ http://localhost:8080.
    collection to produce change events.
 3. **Live Events** — a WebSocket (STOMP) feed of:
    - `/events`: events relayed by the demo `eventRelay` listener,
-   - `/sync` and `/cmd`: live data + refresh commands from the message-queuing
+   - `/sync`: live data push from the message-queuing,
+   - `/cmd`: commands from the message-queuing
      module (it watches `orders`,`products` via `messaging.watch-collections`).
 4. **Aggregations** — edit/save pipeline templates and run them. Try the seeded
    `orders-by-status` template with variables `{"status": "PENDING"}` to see
    `{"_ph": ...}` placeholder substitution.
 5. **Messaging** — send a message to `/push`; it is persisted in the TTL-indexed
    `_messages` collection and fanned out to the target destination *through a change
-   stream*, so you'll see an `ACK` followed by a `RES` on `/cmd`.
+   stream*.
 6. **Multi-instance modes** — start a second backend instance to see discovery and the
    coordination modes in action:
 
