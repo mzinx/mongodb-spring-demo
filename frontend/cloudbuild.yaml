@@ -1,0 +1,62 @@
+steps:
+  # pull the previous image for layer caching (ignore failure on first build)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: ["-c", 'docker pull gcr.io/$PROJECT_ID/$REPO_NAME:$COMMIT_SHA || exit 0']
+    dir: "frontend"
+  # build the container image (CONFIG selects the Vite mode / .env file,
+  # BACKEND_UPSTREAM sets the nginx proxy target for /api and /ws)
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - "build"
+      - "--build-arg"
+      - "CONFIG=${_ENV}"
+      - "--build-arg"
+      - "BACKEND_UPSTREAM=${_BACKEND_UPSTREAM}"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/$REPO_NAME:$COMMIT_SHA"
+      - "."
+    dir: "frontend"
+  # substitute placeholders in the manifests and apply them
+  - name: "gcr.io/cloud-builders/kubectl"
+    entrypoint: bash
+    args:
+    - '-c'
+    - |
+      sed -i \
+        -e "s|\${PROJECT_ID}|$PROJECT_ID|g" \
+        -e "s|\${REPO_NAME}|${REPO_NAME}|g" \
+        -e "s|\${APP_NAME}|${REPO_NAME}|g" \
+        -e "s|\${TAG_NAME}|$COMMIT_SHA|g" \
+        -e "s|\${MIN_REPLICAS}|${_MIN_REPLICAS}|g" \
+        -e "s|\${MAX_REPLICAS}|${_MAX_REPLICAS}|g" \
+        -e "s|\${SSL_CERT_NAME}|${_SSL_CERT_NAME}|g" \
+        -e "s|\${STATIC_IP_NAME}|${_STATIC_IP_NAME}|g" \
+        gke/*.yaml
+      gcloud container clusters get-credentials --project="$PROJECT_ID" --zone="${_ZONE}" "${_CLUSTER}"
+      kubectl apply -f gke/
+    dir: "frontend"
+    env:
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER}"
+  # roll out the new image
+  - name: "gcr.io/cloud-builders/kubectl"
+    args: ["set", "image", "deployment", "${REPO_NAME}", "${REPO_NAME}=gcr.io/$PROJECT_ID/$REPO_NAME:$COMMIT_SHA"]
+    dir: "frontend"
+    env:
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER}"
+images: ["gcr.io/$PROJECT_ID/$REPO_NAME:$COMMIT_SHA"]
+
+substitutions:
+  _ENV: "production"
+  _BACKEND_UPSTREAM: "mongodb-spring-demo-api:8080"
+  _ZONE: "asia-east2-a"
+  _CLUSTER: "mzinx-k8s-prd"
+  _MIN_REPLICAS: "1"
+  _MAX_REPLICAS: "3"
+  _SSL_CERT_NAME: "mzinx-2026"
+  _STATIC_IP_NAME: "mongodb-spring-demo-ip"
+
+options:
+  substitution_option: "ALLOW_LOOSE"

@@ -1,0 +1,54 @@
+steps:
+  # build the app
+  - name: maven:3.8.7-openjdk-18
+    entrypoint: mvn
+    args: ['package', '-Dmaven.test.skip=true']
+    dir: "backend"
+  # pull the previous image for layer caching (ignore failure on first build)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: ["-c", 'docker pull gcr.io/$PROJECT_ID/${REPO_NAME}-api:$COMMIT_SHA || exit 0']
+    dir: "backend"
+  # build the container image
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "--build-arg=JAR_FILE=target/*.jar", "-t", "gcr.io/$PROJECT_ID/${REPO_NAME}-api:$COMMIT_SHA", "."]
+    dir: "backend"
+  # substitute placeholders in the manifests and apply them
+  - name: "gcr.io/cloud-builders/kubectl"
+    entrypoint: bash
+    args:
+    - '-c'
+    - |
+      sed -i \
+        -e "s|\${PROJECT_ID}|$PROJECT_ID|g" \
+        -e "s|\${REPO_NAME}|${REPO_NAME}|g" \
+        -e "s|\${APP_NAME}|${REPO_NAME}-api|g" \
+        -e "s|\${TAG_NAME}|$COMMIT_SHA|g" \
+        -e "s|\${MIN_REPLICAS}|${_MIN_REPLICAS}|g" \
+        -e "s|\${MAX_REPLICAS}|${_MAX_REPLICAS}|g" \
+        -e "s|\${MONGODB_URI}|${_MONGODB_URI}|g" \
+        gke/*.yaml
+      gcloud container clusters get-credentials --project="$PROJECT_ID" --zone="${_ZONE}" "${_CLUSTER}"
+      kubectl apply -f gke/
+    dir: "backend"
+    env:
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER}"
+  # roll out the new image
+  - name: "gcr.io/cloud-builders/kubectl"
+    args: ["set", "image", "deployment", "${REPO_NAME}-api", "${REPO_NAME}-api=gcr.io/$PROJECT_ID/${REPO_NAME}-api:$COMMIT_SHA"]
+    dir: "backend"
+    env:
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER}"
+images: ["gcr.io/$PROJECT_ID/${REPO_NAME}-api:$COMMIT_SHA"]
+
+substitutions:
+  _ZONE: "asia-east2-a"
+  _CLUSTER: "mzinx-k8s-prd"
+  _MIN_REPLICAS: "1"
+  _MAX_REPLICAS: "3"
+  _MONGODB_URI: "mongodb://localhost:27017/mongodb-spring-demo"
+
+options:
+  substitution_option: "ALLOW_LOOSE"

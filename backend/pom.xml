@@ -18,7 +18,7 @@
 	<description>Demo web app backend showcasing the mongodb-spring-* libraries</description>
 
 	<properties>
-		<mongodb-spring.version>1.0.0-SNAPSHOT</mongodb-spring.version>
+		<mongodb-spring.version>1.0.0</mongodb-spring.version>
 	</properties>
 
 	<dependencies>
