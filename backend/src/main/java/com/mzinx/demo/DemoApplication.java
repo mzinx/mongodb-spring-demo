@@ -2,16 +2,11 @@ package com.mzinx.demo;
 
 import java.util.concurrent.Executor;
 
-import org.bson.codecs.configuration.CodecRegistries;
-import org.bson.codecs.configuration.CodecRegistry;
-import org.bson.codecs.pojo.PojoCodecProvider;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 
-import com.mongodb.MongoClientSettings;
 
 /**
  * Demo application showcasing the mongodb-spring-* libraries.
@@ -37,20 +32,4 @@ public class DemoApplication {
         return new SimpleAsyncTaskExecutor("demo-cs-");
     }
 
-    /** POJO codec registry required by mongodb-spring-aggregation. */
-    /*@Bean
-    CodecRegistry pojoCodecRegistry() {
-        return CodecRegistries.fromRegistries(MongoClientSettings.getDefaultCodecRegistry(),
-                CodecRegistries.fromProviders(PojoCodecProvider.builder().automatic(true).build()));
-    }*/
-
-    /**
-     * Registers the POJO codec registry on the MongoClient so raw driver
-     * reads/writes of library POJOs (e.g. {@code PipelineTemplate}) can be
-     * encoded/decoded.
-     */
-    @Bean
-    MongoClientSettingsBuilderCustomizer pojoCodecClientCustomizer(CodecRegistry pojoCodecRegistry) {
-        return builder -> builder.codecRegistry(pojoCodecRegistry);
-    }
 }

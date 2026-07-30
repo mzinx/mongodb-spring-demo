@@ -1,7 +1,6 @@
 import { useState } from 'react'
 
 const CHANNEL_LABELS = {
-  '/events': 'stream event (eventRelay listener)',
   '/sync': 'live data (message-queuing)',
   '/cmd': 'command (message-queuing)',
 }
@@ -9,13 +8,14 @@ const CHANNEL_LABELS = {
 /**
  * Live WebSocket feed. Events arrive over the STOMP endpoint provided by
  * mongodb-spring-message-queuing:
- *  - /events : change stream events relayed by the demo `eventRelay` listener
- *  - /sync   : documents from collections in `messaging.watch-collections`
- *  - /cmd    : command/ACK/RES messages
+ *  - /sync : changed documents from collections in `messaging.watch-collections`
+ *  - /cmd  : REFRESH commands and ACK/RES messages
  */
 export default function LiveEventsPanel({ events, onClear }) {
   const [filter, setFilter] = useState('all')
 
+  // /sync and /cmd always exist; private channels appear once announced.
+  const channels = Array.from(new Set(['/sync', '/cmd', ...events.map((e) => e.channel)]))
   const visible = filter === 'all' ? events : events.filter((e) => e.channel === filter)
 
   return (
@@ -24,16 +24,19 @@ export default function LiveEventsPanel({ events, onClear }) {
         <div>
           <h2>Live events</h2>
           <p className="hint">
-            Insert/update/delete data (see <strong>Data Generator</strong>) while a stream targeting the{' '}
-            <code>eventRelay</code> listener is running, and watch events arrive here in real time.
+            Raw feed of the message-queuing WebSocket destinations. Insert/update/delete orders (see{' '}
+            <strong>Orders</strong>) and watch the live-data service push the changed documents
+            (<code>/sync</code>) and refresh commands (<code>/cmd</code>) in real time.
           </p>
         </div>
         <div className="row-actions">
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">all channels</option>
-            <option value="/events">/events</option>
-            <option value="/sync">/sync</option>
-            <option value="/cmd">/cmd</option>
+            {channels.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </select>
           <button onClick={onClear}>Clear</button>
         </div>
@@ -42,7 +45,7 @@ export default function LiveEventsPanel({ events, onClear }) {
       <div className="feed">
         {visible.length === 0 && <p className="empty">No events yet.</p>}
         {visible.map((e) => (
-          <details key={e.id} className={`event channel-${e.channel.slice(1)}`} open={false}>
+          <details key={e.id} className={`event channel-${e.channel.slice(1).replace(/\//g, '-')}`} open={false}>
             <summary>
               <span className="tag">{e.channel}</span>
               <span className="event-title">{summarize(e)}</span>
@@ -59,9 +62,9 @@ export default function LiveEventsPanel({ events, onClear }) {
 function summarize(e) {
   const p = e.payload
   if (p && typeof p === 'object') {
-    if (e.channel === '/events')
-      return `${p.operationType ?? '?'} on ${p.database ?? ''}.${p.collection ?? '?'}`
-    if (p.type) return `${p.type} → ${p.t ?? p.target ?? ''}`
+    if (p.content?.type === 'REFRESH') return `REFRESH ${p.content.coll}`
+    if (p.content?.type === 'LISTEN') return `LISTEN ${p.content.target} (join private channel)`
+    if (p.type) return `${p.type} → ${p.target ?? ''}`
   }
   return CHANNEL_LABELS[e.channel] ?? 'message'
 }

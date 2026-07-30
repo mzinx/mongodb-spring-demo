@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mzinx.demo.web.dto.StreamConfigRequest;
-import com.mzinx.mongodb.changestream.bootstrap.ChangeStreamManager;
+import com.mzinx.mongodb.changestream.ChangeStreamManager;
 import com.mzinx.mongodb.changestream.listener.ChangeStreamListener;
 import com.mzinx.mongodb.changestream.model.ChangeStreamConfig;
 import com.mzinx.mongodb.changestream.model.ChangeStreamStatus;

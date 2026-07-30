@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { stompClient } from './stomp.js'
 import StreamsPanel from './components/StreamsPanel.jsx'
+import OrdersPanel from './components/OrdersPanel.jsx'
+import DashboardPanel from './components/DashboardPanel.jsx'
 import LiveEventsPanel from './components/LiveEventsPanel.jsx'
-import DataPanel from './components/DataPanel.jsx'
 import AggregationPanel from './components/AggregationPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
 
-const TABS = ['Streams', 'Live Events', 'Data Generator', 'Aggregations', 'Messaging']
-const CHANNELS = ['/events', '/sync', '/cmd']
+const TABS = ['Streams', 'Orders', 'Dashboard', 'Live Events', 'Aggregations', 'Messaging']
+const CHANNELS = ['/sync', '/cmd']
 const MAX_EVENTS = 300
 
 export default function App() {
@@ -16,6 +17,8 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [events, setEvents] = useState([])
   const [instances, setInstances] = useState([])
+  const [privateChannels, setPrivateChannels] = useState([])
+  const privateChannelsRef = useRef(new Set())
   const counter = useRef(0)
 
   const addEvent = useCallback((channel, body) => {
@@ -28,14 +31,40 @@ export default function App() {
     setEvents((prev) =>
       [{ id: ++counter.current, channel, at: new Date(), payload }, ...prev].slice(0, MAX_EVENTS),
     )
+    return payload
   }, [])
 
-  // STOMP lifecycle: subscribe to the relay (/events), live data (/sync) and
-  // command (/cmd) destinations exposed via mongodb-spring-message-queuing.
+  // Private channel protocol: a LISTEN command received on /cmd instructs
+  // every connected client to subscribe to the announced destination, forming
+  // a private channel (clients connecting later never subscribe to it).
+  const subscribePrivate = useCallback(
+    (dest) => {
+      if (typeof dest !== 'string' || !dest.startsWith('/') || privateChannelsRef.current.has(dest)) return
+      privateChannelsRef.current.add(dest)
+      setPrivateChannels(Array.from(privateChannelsRef.current))
+      if (stompClient.connected) stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body))
+    },
+    [addEvent],
+  )
+
+  const handleMessage = useCallback(
+    (channel, body) => {
+      const payload = addEvent(channel, body)
+      if (channel === '/cmd' && payload?.content?.type === 'LISTEN') subscribePrivate(payload.content.target)
+    },
+    [addEvent, subscribePrivate],
+  )
+
+  // STOMP lifecycle: subscribe to the live data (/sync) and command (/cmd)
+  // destinations exposed via mongodb-spring-message-queuing, plus any private
+  // channels announced through LISTEN commands (re-subscribed on reconnect).
   useEffect(() => {
     stompClient.onConnect = () => {
       setConnected(true)
-      CHANNELS.forEach((dest) => stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body)))
+      CHANNELS.forEach((dest) => stompClient.subscribe(dest, (msg) => handleMessage(dest, msg.body)))
+      privateChannelsRef.current.forEach((dest) =>
+        stompClient.subscribe(dest, (msg) => addEvent(dest, msg.body)),
+      )
     }
     stompClient.onWebSocketClose = () => setConnected(false)
     stompClient.activate()
@@ -43,7 +72,7 @@ export default function App() {
       stompClient.deactivate()
       setConnected(false)
     }
-  }, [addEvent])
+  }, [addEvent, handleMessage])
 
   // Poll the discovery instance registry.
   useEffect(() => {
@@ -88,10 +117,11 @@ export default function App() {
 
       <main className="content">
         {tab === 'Streams' && <StreamsPanel />}
+        {tab === 'Orders' && <OrdersPanel events={events} />}
+        {tab === 'Dashboard' && <DashboardPanel events={events} />}
         {tab === 'Live Events' && <LiveEventsPanel events={events} onClear={() => setEvents([])} />}
-        {tab === 'Data Generator' && <DataPanel />}
         {tab === 'Aggregations' && <AggregationPanel />}
-        {tab === 'Messaging' && <MessagingPanel events={events} />}
+        {tab === 'Messaging' && <MessagingPanel events={events} privateChannels={privateChannels} />}
       </main>
     </div>
   )

@@ -7,7 +7,8 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import org.bson.Document;
-import org.bson.types.ObjectId;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,18 +19,20 @@ import org.springframework.web.bind.annotation.RestController;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
-import com.mongodb.client.model.Sorts;
 import com.mongodb.client.model.Updates;
+import com.mzinx.mongodb.aggregation.model.AggregationSpec;
+import com.mzinx.mongodb.aggregation.service.AggregationService;
 
 /**
- * Test data generator so change stream events can be produced straight from
- * the UI: inserts/updates/deletes random documents in the {@code orders}
- * collection (which is watched by the message-queuing "live-data" stream and
- * by any stream the user creates on it).
+ * Orders API: paginated listing (through the mongodb-spring-aggregation
+ * pagination support) plus a test data generator so change stream events can
+ * be produced straight from the UI. The collection is watched by the
+ * message-queuing "live-data" stream, which broadcasts REFRESH commands to
+ * WebSocket subscribers so the orders page updates in real time.
  */
 @RestController
 @RequestMapping("/api/data/orders")
-public class DataController {
+public class OrderController {
 
     static final String COLLECTION = "orders";
 
@@ -38,18 +41,31 @@ public class DataController {
     private static final List<String> PRODUCTS = List.of("keyboard", "mouse", "monitor", "laptop", "webcam", "dock");
 
     private final MongoTemplate mongoTemplate;
+    private final AggregationService aggregationService;
 
-    DataController(MongoTemplate mongoTemplate) {
+    OrderController(MongoTemplate mongoTemplate, AggregationService aggregationService) {
         this.mongoTemplate = mongoTemplate;
+        this.aggregationService = aggregationService;
     }
 
-    /** Latest orders, newest first. */
+    /**
+     * Paginated orders, newest first. Executed via the aggregation library,
+     * which appends a {@code $facet} stage computing results and total count
+     * in a single round trip and returns a Spring Data {@link Page}.
+     */
     @GetMapping
-    public List<Document> list(@RequestParam(defaultValue = "20") int limit) {
-        List<Document> docs = collection().find().sort(Sorts.descending("createdAt"))
-                .limit(Math.min(limit, 100)).into(new ArrayList<>());
-        docs.forEach(DataController::stringifyId);
-        return docs;
+    public Map<String, Object> list(@RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Page<Document> result = aggregationService.execute(
+                AggregationSpec.of(COLLECTION, List.of(new Document("$sort", new Document("createdAt", -1)))),
+                PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 50)));
+        result.getContent().forEach(Documents::stringifyId);
+        return Map.of(
+                "content", result.getContent(),
+                "page", result.getNumber(),
+                "size", result.getSize(),
+                "totalElements", result.getTotalElements(),
+                "totalPages", result.getTotalPages());
     }
 
     /** Inserts {@code count} random orders. */
@@ -106,11 +122,5 @@ public class DataController {
 
     private static <T> T random(List<T> values) {
         return values.get(ThreadLocalRandom.current().nextInt(values.size()));
-    }
-
-    private static void stringifyId(Document doc) {
-        Object id = doc.get("_id");
-        if (id instanceof ObjectId objectId)
-            doc.put("_id", objectId.toHexString());
     }
 }

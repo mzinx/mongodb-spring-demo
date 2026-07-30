@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+spec:
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: gcr.io/${PROJECT_ID}/${REPO_NAME}-api:${TAG_NAME}
+        imagePullPolicy: Always
+        env:
+        - name: MONGODB_URI
+          value: "${MONGODB_URI}"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 900m
+            memory: 1G
+          requests:
+            cpu: 800m
+            memory: 800m
+        livenessProbe:
+          initialDelaySeconds: 50
+          httpGet:
+            path: /api/streams
+            port: 8080
+        readinessProbe:
+          initialDelaySeconds: 50
+          httpGet:
+            path: /api/streams
+            port: 8080
