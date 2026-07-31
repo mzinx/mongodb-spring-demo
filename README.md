@@ -109,14 +109,42 @@ http://localhost:8080.
 5. **Aggregations** — edit/save pipeline templates and run them. Try the seeded
    `orders-by-status` template with variables `{"status": "PENDING"}` to see
    `{"_ph": ...}` placeholder substitution.
-6. **Messaging** — send a message to `/push`; it is persisted in the TTL-indexed
-   `_messages` collection and fanned out to the target destination *through a change
-   stream*. The panel also demonstrates a **private channel** protocol built on the
-   generic `Message.target`: "Create private channel" announces
-   `{type: "LISTEN", target: "/private/<id>"}` on `/cmd`, every currently connected
-   client subscribes to that destination, and subsequent messages sent to it reach
-   only those subscribers (open a second tab before creating the channel, and a
-   third one after, to see the difference).
+6. **Messaging** — private messaging backed by **Spring Session (MongoDB)**. On load
+   each browser is prompted for a display name, which is stored on its Spring Session
+   (persisted in the `sessions` collection via `@EnableMongoHttpSession`, so identity
+   is stable across reconnects and shared across backend instances).    To keep session
+   attributes queryable, the demo swaps in a `JacksonMongoSessionConverter` so
+   attributes are stored as native BSON under `attrs.*` (not an opaque JDK blob) —
+   this is how `attrs.presenceDisplayName` is read back for the roster. Presence
+   (who is "online") is derived from the **session keep-alive**: each session
+   carries an `expireAt` timestamp that MongoDB's TTL index removes once it lapses
+   (`maxInactiveIntervalInSeconds`, 30 min here), and every request the browser
+   makes slides it forward. The live **active sessions** roster is then produced by
+   **querying the `sessions` collection directly** for every non-expired document —
+   there is no in-memory presence registry, and no separate connected flag to keep
+   in sync. (An explicit `attrs.presenceConnected` flag was tried first but could
+   not be updated reliably: Spring Session's request filter re-saves the *whole*
+   session document at the end of every HTTP request, clobbering out-of-band writes
+   to a single attribute.) To make presence drop off *promptly* — rather than waiting
+   out the 30-min TTL after a browser leaves — the WebSocket `SessionDisconnectEvent`
+   pulls the session's `expireAt` in to a short **grace window** (`~30 s`, via a
+   targeted `$set` on `expireAt` only, so it stays clear of the full-document
+   overwrite race). A reconnect within that window re-extends the expiry through the
+   normal session save, so a transient blip doesn't evict an active user. To detect a
+   dead connection after an *intermittent network drop* (where no clean close is ever
+   received), the **`message-queuing` library enables STOMP heartbeats** by default
+   (10 s/10 s, tunable via `messaging.heartbeat.server-ms` / `client-ms`, `0` to
+   disable) — without them the disconnect event would only fire on a clean close.
+   Connect/disconnect events also trigger an immediate re-broadcast of the roster.
+   The roster is broadcast on `/cmd`
+   (`{type: "PRESENCE", sessions: [...]}`). Every browser subscribes to its own inbox
+   destination `/private/<sessionId>`; the panel shows who is online — pick a session
+   to open a private channel and send a `{type: "PRIVATE"}` message to their
+   `/private/<sessionId>` destination. The message still travels *through MongoDB*: it
+   is persisted in the TTL-indexed `_messages` collection and fanned out by the
+   `message-service` change stream, but only the target session's subscriber receives
+   it. Open a second browser (or a private window) to see another session appear in the
+   roster and exchange private messages.
 7. **Multi-instance modes** — start a second backend instance to see discovery and the
    coordination modes in action:
 
@@ -141,6 +169,9 @@ http://localhost:8080.
 | GET | `/api/streams/{id}/status` | Runtime status of one stream |
 | GET | `/api/streams/listeners` | Available `ChangeStreamListener` bean names |
 | GET | `/api/instances` | Live instances (discovery heartbeats) |
+| GET | `/api/session/me` | Current browser's Spring Session id, private channel and display name |
+| POST | `/api/session/name` | Set the display name on the Spring Session |
+| GET | `/api/session/active` | Live roster of active (connected) sessions |
 | GET | `/api/data/orders?page=&size=` | Paginated orders (aggregation library `$facet` pagination) |
 | POST | `/api/data/orders/insert`, `/update-random`, `/delete-random` | Test data generator |
 | GET | `/api/summary` | Precomputed daily order summaries |

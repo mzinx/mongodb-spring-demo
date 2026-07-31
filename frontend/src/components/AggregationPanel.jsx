@@ -23,7 +23,7 @@ export default function AggregationPanel() {
 
   const selectTemplate = (t) => {
     setName(t.name)
-    setStages(JSON.stringify(t.aggs ?? [], null, 2))
+    setStages(JSON.stringify(t.stages ?? [], null, 2))
     setError(null)
   }
 

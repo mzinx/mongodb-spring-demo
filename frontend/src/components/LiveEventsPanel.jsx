@@ -64,7 +64,9 @@ function summarize(e) {
   if (p && typeof p === 'object') {
     if (p.content?.type === 'REFRESH') return `REFRESH ${p.content.coll}`
     if (p.content?.type === 'LISTEN') return `LISTEN ${p.content.target} (join private channel)`
-    if (p.type) return `${p.type} → ${p.target ?? ''}`
+    if (p.content?.type === 'PRESENCE') return `PRESENCE (${p.content.sessions?.length ?? 0} online)`
+    if (p.content?.type === 'PRIVATE') return `PRIVATE from ${p.content.from}`
+    if (p.content?.op) return `${p.content.op} → ${p.content.coll ?? ''}`
   }
   return CHANNEL_LABELS[e.channel] ?? 'message'
 }
