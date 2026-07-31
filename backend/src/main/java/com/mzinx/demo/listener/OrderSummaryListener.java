@@ -15,6 +15,8 @@ import com.mzinx.mongodb.aggregation.dao.PipelineRepository;
 import com.mzinx.mongodb.aggregation.model.AggregationSpec;
 import com.mzinx.mongodb.aggregation.service.AggregationService;
 import com.mzinx.mongodb.changestream.listener.ChangeStreamListener;
+import com.mzinx.mongodb.messaging.command.CommandMessages;
+import com.mzinx.mongodb.messaging.service.MessageService;
 
 /**
  * {@link ChangeStreamListener} precomputing the daily order summary.
@@ -45,12 +47,17 @@ public class OrderSummaryListener implements ChangeStreamListener<Document> {
 
     private final PipelineRepository pipelineRepository;
     private final AggregationService aggregationService;
+    private final MessageService messageService;
     private final MongoTemplate mongoTemplate;
+    private final CommandMessages commandMessages;
 
     OrderSummaryListener(PipelineRepository pipelineRepository, AggregationService aggregationService,
+            MessageService messageService, CommandMessages commandMessages,
             MongoTemplate mongoTemplate) {
         this.pipelineRepository = pipelineRepository;
         this.aggregationService = aggregationService;
+        this.messageService = messageService;
+        this.commandMessages = commandMessages;
         this.mongoTemplate = mongoTemplate;
     }
 
@@ -59,6 +66,8 @@ public class OrderSummaryListener implements ChangeStreamListener<Document> {
         logger.info("Order change detected ({}), recomputing daily summary",
                 event.getOperationType() != null ? event.getOperationType().getValue() : "?");
         recompute();
+
+        this.messageService.broadcast(commandMessages.refresh(event.getNamespace().getCollectionName()));
     }
 
     /** Recomputes the whole {@code orderSummaries} collection. */
