@@ -1,8 +1,35 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { useLiveRefresh } from '../useLiveRefresh.js'
 
 const STATUS_ORDER = ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED']
+const SUMMARY_COLLECTION = 'orderSummaries'
+
+/** Sort summaries by day id, newest first (matches the /api/summary order). */
+function sortByDayDesc(list) {
+  return [...list].sort((a, b) => (a._id < b._id ? 1 : a._id > b._id ? -1 : 0))
+}
+
+/**
+ * Applies a single /sync change-stream event (as broadcast by the message-queuing
+ * live-data listener) to the current summaries, returning a new array. The event
+ * content shape is: { op, k, db, coll, doc?, changes? }.
+ *  - insert/replace: `doc` is the full summary document -> upsert by _id
+ *  - delete:         remove the document whose _id === k
+ *  - update:         we don't get the full doc; caller falls back to an API load
+ */
+function applySyncEvent(list, content) {
+  const op = content.op
+  if (op === 'insert' || op === 'replace') {
+    const doc = content.doc
+    if (!doc?._id) return list
+    const rest = list.filter((s) => s._id !== doc._id)
+    return sortByDayDesc([doc, ...rest])
+  }
+  if (op === 'delete') {
+    return list.filter((s) => s._id !== content.k)
+  }
+  return list
+}
 
 /**
  * Daily order summary dashboard.
@@ -10,15 +37,25 @@ const STATUS_ORDER = ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED']
  * The data is NOT aggregated on page load: it is precomputed into the
  * `orderSummaries` collection by the `orderSummaryListener` change stream
  * listener (stream `order-summary`, AUTO_RECOVER mode - only the elected
- * leader instance recomputes). The summary collection is itself watched by
- * the live-data service, so this page refreshes in real time whenever the
- * summaries change.
+ * leader instance recomputes). The summary collection is in
+ * `messaging.watch-collections`, so the live-data service pushes the changed
+ * summary documents on `/sync`.
+ *
+ * Rather than re-fetching the whole list from the API on every change, this
+ * page applies those `/sync` payloads directly to the in-memory view: the
+ * initial state is loaded once from `/api/summary`, then each `/sync` event
+ * upserts/removes the affected day. An UPDATE event (no full document) falls
+ * back to a one-off API reload, which normally never happens here because the
+ * recompute uses `$merge ... whenMatched: replace` (producing replace ops).
  */
 export default function DashboardPanel({ events }) {
   const [summaries, setSummaries] = useState([])
   const [streamStatus, setStreamStatus] = useState(null)
   const [error, setError] = useState(null)
   const [refreshedAt, setRefreshedAt] = useState(null)
+  // Id of the most recent event we've already applied, so we only process new
+  // /sync events (events[] is newest-first and shared across the whole app).
+  const lastEventId = useRef(0)
 
   const load = useCallback(
     (silent = false) =>
@@ -27,7 +64,7 @@ export default function DashboardPanel({ events }) {
         api.get('/api/streams/order-summary/status').catch(() => null),
       ])
         .then(([data, status]) => {
-          setSummaries(data)
+          setSummaries(sortByDayDesc(data || []))
           setStreamStatus(status)
           if (silent) setRefreshedAt(new Date())
           setError(null)
@@ -40,10 +77,50 @@ export default function DashboardPanel({ events }) {
     load()
   }, [load])
 
-  // Real-time: the summary collection is in messaging.watch-collections, so a
-  // REFRESH command arrives on /cmd whenever the listener recomputed it.
-  const onRefresh = useCallback(() => load(true), [load])
-  useLiveRefresh(events, 'orderSummaries', onRefresh)
+  // The summary data now updates from /sync, but the AUTO_RECOVER stream status
+  // (which instance is leader / where it's running) isn't part of that feed, so
+  // poll it periodically to keep the header line current.
+  useEffect(() => {
+    let alive = true
+    const timer = setInterval(() => {
+      api
+        .get('/api/streams/order-summary/status')
+        .then((status) => alive && setStreamStatus(status))
+        .catch(() => {})
+    }, 10000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
+  // Real-time: apply the changed summary documents that arrive on /sync directly
+  // to the view, instead of reloading everything from the API.
+  useEffect(() => {
+    // Collect unprocessed /sync events for our collection, oldest first.
+    const fresh = []
+    for (const e of events) {
+      if (e.id <= lastEventId.current) break // events are newest-first
+      if (e.channel !== '/sync') continue
+      const content = e.payload?.content
+      if (content?.coll === SUMMARY_COLLECTION) fresh.push(e)
+    }
+    if (events.length) lastEventId.current = events[0].id
+    if (fresh.length === 0) return
+
+    fresh.reverse() // apply in chronological order
+    // If any event is an UPDATE (no full doc), reload once to stay correct.
+    if (fresh.some((e) => e.payload.content.op === 'update')) {
+      load(true)
+      return
+    }
+    setSummaries((prev) => {
+      let next = prev
+      for (const e of fresh) next = applySyncEvent(next, e.payload.content)
+      return next
+    })
+    setRefreshedAt(new Date())
+  }, [events, load])
 
   const recompute = () =>
     api.post('/api/summary/recompute').catch((err) => setError(err.message))
@@ -67,8 +144,8 @@ export default function DashboardPanel({ events }) {
         </div>
         <div className="row-actions">
           {refreshedAt && (
-            <span className="pill ok" title="Triggered by a REFRESH command on /cmd">
-              live-refreshed {refreshedAt.toLocaleTimeString()}
+            <span className="pill ok" title="Applied from changed documents pushed on /sync">
+              live-updated {refreshedAt.toLocaleTimeString()}
             </span>
           )}
           <button onClick={recompute}>Recompute now</button>

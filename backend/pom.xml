@@ -18,7 +18,9 @@
 	<description>Demo web app backend showcasing the mongodb-spring-* libraries</description>
 
 	<properties>
-		<mongodb-spring.version>1.0.0</mongodb-spring.version>
+		<mongodb-spring.version>1.0.1</mongodb-spring.version>
+		<!-- Not managed by the Spring Boot 4 BOM, so pin explicitly. -->
+		<spring-session-data-mongodb.version>3.4.2</spring-session-data-mongodb.version>
 	</properties>
 
 	<dependencies>
@@ -29,6 +31,16 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-mongodb</artifactId>
+		</dependency>
+
+		<!-- Spring Session backed by MongoDB: each browser gets an HTTP session
+		     persisted in the `sessions` collection, shared across backend
+		     instances and used to build the live "active sessions" presence list
+		     that drives the private-messaging channels. -->
+		<dependency>
+			<groupId>org.springframework.session</groupId>
+			<artifactId>spring-session-data-mongodb</artifactId>
+			<version>${spring-session-data-mongodb.version}</version>
 		</dependency>
 
 		<!-- mongodb-spring libraries under demonstration.

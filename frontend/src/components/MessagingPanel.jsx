@@ -1,125 +1,196 @@
-import { useState } from 'react'
-import { pushMessage } from '../stomp.js'
+import { useEffect, useMemo, useState } from 'react'
+import { sendPrivate } from '../stomp.js'
 
 /**
- * mongodb-spring-message-queuing demo: publishes a message to the /push
- * STOMP endpoint. The backend persists it to the `_messages` collection and a
- * change stream on that collection fans it out to subscribers of the target
- * destination — so the Live Events actually travelled through MongoDB.
+ * Private messaging built on Spring Session presence.
  *
- * Private channel protocol (demo-level, built on the generic Message.target):
- *   1. a client announces `{type: "LISTEN", target: "/private/<id>"}` on /cmd
- *      (through the queue, so every connected client receives it),
- *   2. each client receiving the LISTEN command subscribes to that target
- *      (see App.jsx), forming a private channel — clients connecting later
- *      never subscribe to it,
- *   3. messages sent to the private target are only delivered to its
- *      subscribers.
+ * Identity comes from Spring Session (persisted in MongoDB): every browser has a
+ * stable session id and an inbox channel `/private/<sessionId>` it subscribes to
+ * on connect. The backend tracks WebSocket connect/disconnect and broadcasts the
+ * live roster of active sessions on `/cmd` (type PRESENCE), which the UI renders
+ * below as "who's online".
+ *
+ * To start a private chat you pick an online session and send to its
+ * `/private/<sessionId>` channel. The message travels through the MongoDB
+ * message queue (persisted in `_messages`, fanned out by a change stream) and is
+ * delivered only to that session's subscriber. Because the target is the
+ * receiver's own session channel, only that specific person receives it.
  */
-export default function MessagingPanel({ events, privateChannels = [] }) {
-  const [target, setTarget] = useState('/cmd')
-  const [content, setContent] = useState('{\n  "type": "NOTIFICATION",\n  "message": "Hello from the demo UI"\n}')
+export default function MessagingPanel({ events, me, activeSessions = [], addEvent }) {
+  const [peer, setPeer] = useState(null)
+  const [text, setText] = useState('')
   const [error, setError] = useState(null)
-  const [sentAt, setSentAt] = useState(null)
-  const [announced, setAnnounced] = useState(null)
+  // Per-sender "last read" timestamps (keyed by the sender's display name, which
+  // is how incoming PRIVATE messages identify who they're from). Anything newer
+  // than this counts as unread and drives the bubble on the session list.
+  const [lastRead, setLastRead] = useState({})
 
-  const send = () => {
-    setError(null)
-    try {
-      pushMessage({ target, content: JSON.parse(content) })
-      setSentAt(new Date())
-    } catch (err) {
-      setError(`Invalid content JSON: ${err.message}`)
+  // Other people online (exclude ourselves).
+  const others = useMemo(
+    () => activeSessions.filter((s) => s.sessionId !== me?.sessionId),
+    [activeSessions, me],
+  )
+
+  // Unread count per sender display name: PRIVATE messages that arrived on our
+  // own inbox channel, newer than when we last read that sender's thread. The
+  // currently-open peer is always treated as read (its thread is on screen), so
+  // it never shows a bubble and there's no flash before the "mark read" effect.
+  const unreadByName = useMemo(() => {
+    if (!me) return {}
+    const counts = {}
+    for (const e of events) {
+      const c = e.payload?.content
+      if (c?.type !== 'PRIVATE') continue
+      if (e.channel !== me.channel) continue // only messages received by us
+      const from = c.from
+      if (!from || from === me.displayName) continue
+      if (from === peer?.displayName) continue // open thread = read
+      const seenAt = lastRead[from] || 0
+      if (e.at.getTime() > seenAt) counts[from] = (counts[from] || 0) + 1
+    }
+    return counts
+  }, [events, me, peer, lastRead])
+
+  // Keep the open peer's "last read" marker advancing as new messages arrive, so
+  // that after switching away the count only reflects messages received later.
+  useEffect(() => {
+    if (!peer?.displayName) return
+    setLastRead((prev) => ({ ...prev, [peer.displayName]: Date.now() }))
+  }, [peer, events])
+
+  const openPeer = (s) => {
+    setPeer(s)
+    if (s?.displayName) {
+      setLastRead((prev) => ({ ...prev, [s.displayName]: Date.now() }))
     }
   }
 
-  const openPrivateChannel = () => {
-    setError(null)
-    const dest = `/private/${Math.random().toString(36).slice(2, 8)}`
-    // Announced through the queue: every currently connected client receives
-    // the LISTEN command on /cmd and subscribes to the new destination.
-    pushMessage({ target: '/cmd', content: { type: 'LISTEN', target: dest } })
-    setAnnounced(dest)
-  }
+  // Conversation with the selected peer: private messages we received on our own
+  // inbox from them, plus ones we sent to their channel.
+  const conversation = useMemo(() => {
+    if (!peer || !me) return []
+    return events
+      .filter((e) => {
+        const c = e.payload?.content
+        if (c?.type !== 'PRIVATE') return false
+        // Received: arrived on our inbox channel, sent by the peer.
+        const received = e.channel === me.channel && c.from === peer.displayName
+        // Sent: we published to the peer's channel.
+        const sent = e.channel === peer.channel
+        return received || sent
+      })
+      .slice()
+      .reverse()
+  }, [events, peer, me])
 
-  const related = events
-    .filter((e) => e.channel === '/cmd' || privateChannels.includes(e.channel))
-    .slice(0, 10)
+  const send = () => {
+    setError(null)
+    if (!peer) {
+      setError('Select someone online first.')
+      return
+    }
+    const body = text.trim()
+    if (!body) return
+    const from = me?.displayName || 'anonymous'
+    sendPrivate(peer.channel, from, body)
+    // Echo our own outgoing message locally: it is delivered to the peer's
+    // inbox (which we don't subscribe to), so without this the sender would
+    // never see their own messages in the conversation.
+    addEvent?.(
+      peer.channel,
+      JSON.stringify({ target: peer.channel, content: { type: 'PRIVATE', from, text: body, at: new Date().toISOString() } }),
+    )
+    setText('')
+  }
 
   return (
     <div className="panel split">
       <div className="card">
-        <h3>Send message (/push)</h3>
+        <h3>Active sessions</h3>
         <p className="hint">
-          Flow: UI → STOMP <code>/push</code> → persisted in <code>_messages</code> (TTL-indexed) → change
-          stream (<code>message-service</code>) → broadcast to subscribers of the target destination.
+          Presence from <strong>Spring Session (MongoDB)</strong>: each browser keeps a session in the{' '}
+          <code>sessions</code> collection, and the backend broadcasts a <code>PRESENCE</code> roster on{' '}
+          <code>/cmd</code> as sessions connect/disconnect. Open a second browser (or private window) to see
+          another session appear here.
         </p>
-        <label>
-          Target destination
-          <select value={target} onChange={(e) => setTarget(e.target.value)}>
-            <option value="/cmd">/cmd</option>
-            <option value="/sync">/sync</option>
-            {privateChannels.map((c) => (
-              <option key={c} value={c}>
-                {c} (private)
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Content (JSON)
-          <textarea rows={6} value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <div className="actions">
-          <button className="primary" onClick={send}>
-            Send
-          </button>
-          {sentAt && <span className="hint">sent at {sentAt.toLocaleTimeString()}</span>}
-        </div>
-
-        <h4>Private channels</h4>
-        <p className="hint">
-          A <code>LISTEN</code> command tells every <em>currently connected</em> client to subscribe to a
-          new destination. Open this page in a second browser tab, create a channel, and send to it from
-          either tab — then open a third tab and note it does not receive the channel's messages.
-        </p>
-        <div className="actions">
-          <button onClick={openPrivateChannel}>Create private channel</button>
-          {announced && (
-            <span className="hint mono">
-              announced {announced}
-              {privateChannels.includes(announced) ? ' — joined' : ' — waiting for LISTEN…'}
-            </span>
-          )}
-        </div>
-        {privateChannels.length > 0 && (
-          <p className="hint">
-            joined: {privateChannels.map((c) => (
-              <span key={c} className="tag" style={{ marginRight: 4 }}>
-                {c}
-              </span>
-            ))}
+        <ul className="session-list">
+          {others.length === 0 && <li className="empty">No one else is online right now.</li>}
+          {others.map((s) => {
+            const unread = unreadByName[s.displayName] || 0
+            return (
+              <li
+                key={s.sessionId}
+                className={`session-item ${peer?.sessionId === s.sessionId ? 'active' : ''}`}
+                onClick={() => openPeer(s)}
+              >
+                <span className="dot ok" />
+                <span className="session-name">{s.displayName || 'anonymous'}</span>
+                {unread > 0 && (
+                  <span className="unread-bubble" title={`${unread} new message${unread > 1 ? 's' : ''}`}>
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
+                <span className="session-id mono">{s.sessionId.slice(0, 8)}…</span>
+                <button
+                  className="link"
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    openPeer(s)
+                  }}
+                >
+                  open private channel
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+        {me && (
+          <p className="hint mono">
+            you: {me.displayName} · inbox {me.channel}
           </p>
         )}
       </div>
 
       <div className="card">
-        <h3>Recent messages</h3>
-        <p className="hint">Messages on /cmd and joined private channels, delivered through the MongoDB queue.</p>
-        <div className="feed">
-          {related.length === 0 && <p className="empty">Nothing received yet.</p>}
-          {related.map((e) => (
-            <details key={e.id} className="event channel-cmd">
-              <summary>
-                <span className="tag">{e.channel}</span>
-                <span className="event-title">{e.payload?.content?.type ?? 'message'}</span>
-                <span className="event-time">{e.at.toLocaleTimeString()}</span>
-              </summary>
-              <pre>{JSON.stringify(e.payload, null, 2)}</pre>
-            </details>
-          ))}
-        </div>
+        <h3>
+          Private chat
+          {peer && <span className="tag" style={{ marginLeft: 8 }}>{peer.displayName}</span>}
+        </h3>
+        {!peer && <p className="hint">Select an active session on the left to open a private channel.</p>}
+        {peer && (
+          <>
+            <p className="hint">
+              Messages go to <code>{peer.channel}</code> — routed through MongoDB (<code>_messages</code> →
+              change stream) and delivered only to <strong>{peer.displayName}</strong>'s session.
+            </p>
+            <div className="feed">
+              {conversation.length === 0 && <p className="empty">No messages yet. Say hello.</p>}
+              {conversation.map((e) => {
+                const mine = e.channel === peer.channel
+                return (
+                  <div key={e.id} className={`dm ${mine ? 'dm-out' : 'dm-in'}`}>
+                    <span className="dm-from">{mine ? me?.displayName : e.payload.content.from}</span>
+                    <span className="dm-text">{e.payload.content.text}</span>
+                    <span className="event-time">{e.at.toLocaleTimeString()}</span>
+                  </div>
+                )
+              })}
+            </div>
+            {error && <p className="error">{error}</p>}
+            <div className="actions">
+              <input
+                className="dm-input"
+                value={text}
+                placeholder={`Message ${peer.displayName}…`}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && send()}
+              />
+              <button className="primary" onClick={send}>
+                Send
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
