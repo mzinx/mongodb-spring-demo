@@ -18,7 +18,6 @@
 	<description>Demo web app backend showcasing the mongodb-spring-* libraries</description>
 
 	<properties>
-		<mongodb-spring.version>1.1.0</mongodb-spring.version>
 		<!-- Not managed by the Spring Boot 4 BOM, so pin explicitly. -->
 		<spring-session-data-mongodb.version>3.4.2</spring-session-data-mongodb.version>
 	</properties>
@@ -50,12 +49,12 @@
 		<dependency>
 			<groupId>com.mzinx</groupId>
 			<artifactId>mongodb-spring-message-queuing</artifactId>
-			<version>${mongodb-spring.version}</version>
+			<version>1.1.0</version>
 		</dependency>
 		<dependency>
 			<groupId>com.mzinx</groupId>
 			<artifactId>mongodb-spring-discovery</artifactId>
-			<version>${mongodb-spring.version}</version>
+			<version>1.0.1</version>
 		</dependency>
 
 		<dependency>
