@@ -16,7 +16,10 @@
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -37,9 +40,13 @@ code {
 }
 
 .app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 0 20px 60px;
+  padding: 0 20px 20px;
 }
 
 /* ---------- header ---------- */
@@ -106,6 +113,17 @@ code {
 .pill.bad {
   color: var(--danger);
   border-color: rgba(229, 83, 75, 0.4);
+}
+
+/* ---------- content ---------- */
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 /* ---------- tabs ---------- */
@@ -373,14 +391,29 @@ button.link.active {
   color: var(--warn);
 }
 
-.status-PENDING { color: var(--warn); }
-.status-PAID { color: var(--accent-2); }
-.status-SHIPPED { color: #b083f0; }
-.status-DELIVERED { color: var(--accent); }
-.status-CANCELLED { color: var(--danger); }
+.status-PENDING {
+  color: var(--warn);
+}
+
+.status-PAID {
+  color: var(--accent-2);
+}
+
+.status-SHIPPED {
+  color: #b083f0;
+}
+
+.status-DELIVERED {
+  color: var(--accent);
+}
+
+.status-CANCELLED {
+  color: var(--danger);
+}
 
 /* ---------- event feed ---------- */
 .feed {
+  height: 300px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -426,8 +459,13 @@ button.link.active {
   color: #b9c4da;
 }
 
-.channel-sync summary .tag { color: var(--accent-2); }
-.channel-cmd summary .tag { color: var(--warn); }
+.channel-sync summary .tag {
+  color: var(--accent-2);
+}
+
+.channel-cmd summary .tag {
+  color: var(--warn);
+}
 
 /* ---------- pagination ---------- */
 .pagination {
@@ -512,6 +550,13 @@ button.link.active {
 
 .full-width {
   width: 100%;
+}
+
+/* ---------- admin ---------- */
+.admin {
+  gap: 18px;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---------- messaging: active sessions + private chat ---------- */
