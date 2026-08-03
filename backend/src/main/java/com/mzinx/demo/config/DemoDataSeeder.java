@@ -9,7 +9,7 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
-import com.mzinx.demo.listener.OrderSummaryListener;
+import com.mzinx.demo.listener.MaterializedViewListener;
 import com.mzinx.mongodb.aggregation.dao.PipelineRepository;
 import com.mzinx.mongodb.aggregation.model.PipelineTemplate;
 import com.mzinx.mongodb.changestream.model.ChangeStream.Mode;
@@ -20,28 +20,37 @@ import com.mzinx.mongodb.changestream.service.ChangeStreamConfigService;
 /**
  * Seeds demo artifacts on first start:
  * <ul>
- * <li>the {@code order-summary} change stream config driving
- * {@link OrderSummaryListener} (AUTO_RECOVER: one leader instance
- * precomputes, with automatic failover)</li>
- * <li>the {@code orders-daily-summary} pipeline template it executes
- * (with a {@code {"_ph": "runId"}} variable placeholder)</li>
+ * <li>the {@code order-summary} change stream config driving the generic
+ * {@link MaterializedViewListener} (AUTO_RECOVER: one leader instance
+ * precomputes, with automatic failover). Its {@code attributes.outputPipeline}
+ * selects which pipeline the listener runs — seeded to the default below,
+ * changeable at runtime from the Change streams page.</li>
+ * <li>the default {@code orders-daily-summary} output pipeline template it
+ * executes (the terminal {@code $merge} replaces documents by {@code _id})</li>
  * <li>two more pipeline templates for the Aggregations page</li>
  * </ul>
  */
 @Component
 public class DemoDataSeeder implements ApplicationRunner {
 
+    /** The change stream id (in this demo) that materializes the order summary. */
+    public static final String ORDER_SUMMARY_STREAM_ID = "order-summary";
+    public static final String ORDERS_DAILY_SUMMARY_PIPELINE = "orders-daily-summary";
+    public static final String ORDERS_COLLECTION = "orders";
+    public static final String ORDERS_SUMMARY_COLLECTION = "orderSummaries";
+
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
     private final ChangeStreamConfigService changeStreamConfigService;
     private final PipelineRepository pipelineRepository;
-    private final OrderSummaryListener orderSummaryListener;
+    private final MaterializedViewListener materializedViewListener;
+    
 
     DemoDataSeeder(ChangeStreamConfigService changeStreamConfigService, PipelineRepository pipelineRepository,
-            OrderSummaryListener orderSummaryListener) {
+            MaterializedViewListener materializedViewListener) {
         this.changeStreamConfigService = changeStreamConfigService;
         this.pipelineRepository = pipelineRepository;
-        this.orderSummaryListener = orderSummaryListener;
+        this.materializedViewListener = materializedViewListener;
     }
 
     @Override
@@ -53,10 +62,10 @@ public class DemoDataSeeder implements ApplicationRunner {
             changeStreamConfigService.delete("orders-demo");
         }
 
-        if (pipelineRepository.findById(OrderSummaryListener.PIPELINE_NAME).isEmpty()) {
-            logger.info("Seeding pipeline template '{}'", OrderSummaryListener.PIPELINE_NAME);
+        if (pipelineRepository.findById(ORDERS_DAILY_SUMMARY_PIPELINE).isEmpty()) {
+            logger.info("Seeding pipeline template '{}'", ORDERS_DAILY_SUMMARY_PIPELINE);
             pipelineRepository.save(PipelineTemplate.builder()
-                    .name(OrderSummaryListener.PIPELINE_NAME)
+                    .name(ORDERS_DAILY_SUMMARY_PIPELINE)
                     .stages(List.of(
                             Map.of("$group", Map.of(
                                     "_id", Map.of(
@@ -76,28 +85,32 @@ public class DemoDataSeeder implements ApplicationRunner {
                                             Map.of("$divide",
                                                     List.of("$revenue", Map.of("$max", List.of("$orders", 1)))),
                                             2)),
-                                    "updatedAt", "$$NOW",
-                                    // replaced with the runId variable at execution time
-                                    "runId", Map.of("_ph", "runId"))),
+                                    // Recompute timestamp (informational; the dashboard shows it).
+                                    "updatedAt", "$$NOW")),
                             Map.of("$merge", Map.of(
-                                    "into", OrderSummaryListener.SUMMARY_COLLECTION,
+                                    "into", ORDERS_SUMMARY_COLLECTION,
                                     "on", "_id",
                                     "whenMatched", "replace",
                                     "whenNotMatched", "insert"))))
                     .build());
         }
 
-        if (changeStreamConfigService.findById("order-summary") == null) {
-            logger.info("Seeding change stream config 'order-summary'");
+        if (changeStreamConfigService.findById(ORDER_SUMMARY_STREAM_ID) == null) {
+            logger.info("Seeding change stream config '{}'", ORDER_SUMMARY_STREAM_ID);
             changeStreamConfigService.save(ChangeStreamConfig.builder()
-                    .id("order-summary")
-                    .collectionName(OrderSummaryListener.SOURCE_COLLECTION)
+                    .id(ORDER_SUMMARY_STREAM_ID)
+                    .collectionName(ORDERS_COLLECTION)
                     // only the elected leader recomputes; failover is automatic
                     .mode(Mode.AUTO_RECOVER)
                     // resume missed order changes after a restart
                     .resumeStrategy(ResumeStrategy.PER_BATCH)
                     .pipeline(List.of())
-                    .listener(OrderSummaryListener.BEAN_NAME)
+                    .listener(MaterializedViewListener.BEAN_NAME)
+                    // The output pipeline is required and selectable at runtime (Change
+                    // streams page); seed the default so the listener has a pipeline to run.
+                    .attributes(new java.util.HashMap<>(Map.of(
+                            MaterializedViewListener.ATTR_OUTPUT_PIPELINE,
+                            ORDERS_DAILY_SUMMARY_PIPELINE)))
                     .enabled(true)
                     .build());
         }
@@ -129,6 +142,8 @@ public class DemoDataSeeder implements ApplicationRunner {
         }
 
         // Initial computation so the dashboard has data before the first change.
-        orderSummaryListener.recompute();
+        ChangeStreamConfig summaryConfig = changeStreamConfigService.findById(ORDER_SUMMARY_STREAM_ID);
+        materializedViewListener.recompute(ORDERS_COLLECTION, ORDER_SUMMARY_STREAM_ID,
+                summaryConfig != null ? summaryConfig.getAttributes() : null);
     }
 }

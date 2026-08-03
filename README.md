@@ -175,7 +175,6 @@ http://localhost:8080.
 | GET | `/api/data/orders?page=&size=` | Paginated orders (aggregation library `$facet` pagination) |
 | POST | `/api/data/orders/insert`, `/update-random`, `/delete-random` | Test data generator |
 | GET | `/api/summary` | Precomputed daily order summaries |
-| POST | `/api/summary/recompute` | Force a summary recompute |
 | GET/PUT/DELETE | `/api/pipelines`, `/api/pipelines/{name}` | Aggregation pipeline templates |
 | POST | `/api/aggregations/run` | Run a pipeline (inline stages or saved template + variables) |
 

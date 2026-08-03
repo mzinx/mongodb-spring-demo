@@ -8,7 +8,7 @@ import LiveEventsPanel from './components/LiveEventsPanel.jsx'
 import AggregationPanel from './components/AggregationPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
 
-const TABS = ['Streams', 'Orders', 'Dashboard', 'Live Events', 'Aggregations', 'Messaging']
+const TABS = ['Dashboard', 'Orders', 'Messaging', 'Admin']
 const CHANNELS = ['/sync', '/cmd']
 const MAX_EVENTS = 300
 
@@ -18,7 +18,7 @@ const MAX_EVENTS = 300
 let bootStarted = false
 
 export default function App() {
-  const [tab, setTab] = useState('Streams')
+  const [tab, setTab] = useState('Dashboard')
   const [connected, setConnected] = useState(false)
   const [events, setEvents] = useState([])
   const [instances, setInstances] = useState([])
@@ -180,14 +180,18 @@ export default function App() {
       </nav>
 
       <main className="content">
-        {tab === 'Streams' && <StreamsPanel />}
-        {tab === 'Orders' && <OrdersPanel events={events} />}
         {tab === 'Dashboard' && <DashboardPanel events={events} />}
-        {tab === 'Live Events' && <LiveEventsPanel events={events} onClear={() => setEvents([])} />}
-        {tab === 'Aggregations' && <AggregationPanel />}
+        {tab === 'Orders' && <OrdersPanel events={events} />}
         {tab === 'Messaging' && (
           <MessagingPanel events={events} me={me} activeSessions={activeSessions} addEvent={addEvent} />
         )}
+        {tab === 'Admin' && (
+          <div className="admin">
+            <StreamsPanel />
+            <AggregationPanel />
+          </div>
+        )}
+        <LiveEventsPanel events={events} onClear={() => setEvents([])} />
       </main>
     </div>
   )

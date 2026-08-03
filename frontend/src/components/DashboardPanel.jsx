@@ -122,11 +122,8 @@ export default function DashboardPanel({ events }) {
     setRefreshedAt(new Date())
   }, [events, load])
 
-  const recompute = () =>
-    api.post('/api/summary/recompute').catch((err) => setError(err.message))
-
   const today = new Date().toISOString().slice(0, 10)
-  const todaySummary = summaries.find((s) => s._id === today)
+  const todaySummary = summaries[0]//summaries.find((s) => s._id === today)
   const maxRevenue = Math.max(...summaries.map((s) => s.revenue ?? 0), 1)
 
   return (
@@ -135,11 +132,11 @@ export default function DashboardPanel({ events }) {
         <div>
           <h2>Daily order summary</h2>
           <p className="hint">
-            Precomputed into <code>orderSummaries</code> by the <code>order-summary</code> change stream
-            (AUTO_RECOVER: leader{' '}
+            Precomputed by the <code>order-summary</code> change stream (AUTO_RECOVER: leader{' '}
             <strong>{streamStatus?.leader ?? 'electing…'}</strong>
             {streamStatus ? (streamStatus.running ? ', running on this instance' : ', running elsewhere') : ''}
-            ) executing the <code>orders-daily-summary</code> pipeline template with <code>$merge</code>.
+            ) executing its configured output pipeline with <code>$merge</code>. Change the pipeline on the{' '}
+            <strong>Change streams</strong> page (edit <code>order-summary</code>).
           </p>
         </div>
         <div className="row-actions">
@@ -148,14 +145,13 @@ export default function DashboardPanel({ events }) {
               live-updated {refreshedAt.toLocaleTimeString()}
             </span>
           )}
-          <button onClick={recompute}>Recompute now</button>
         </div>
       </div>
 
       {error && <p className="error">{error}</p>}
 
       <div className="cards">
-        <Metric label={`Orders today (${today})`} value={todaySummary?.orders ?? 0} />
+        <Metric label={`Orders today (${todaySummary?._id})`} value={todaySummary?.orders ?? 0} />
         <Metric label="Revenue today" value={fmt(todaySummary?.revenue)} />
         <Metric label="Avg order value today" value={fmt(todaySummary?.avgOrderValue)} />
         <Metric label="Days tracked" value={summaries.length} />
