@@ -11,19 +11,22 @@ export default function StreamsPanel() {
   const [configs, setConfigs] = useState([])
   const [statuses, setStatuses] = useState([])
   const [listeners, setListeners] = useState([])
+  const [pipelines, setPipelines] = useState([])
   const [editing, setEditing] = useState(null) // null | 'new' | config object
   const [error, setError] = useState(null)
 
   const load = useCallback(async () => {
     try {
-      const [config, status, ls] = await Promise.all([
+      const [config, status, ls, pl] = await Promise.all([
         api.get('/api/streams'),
         api.get('/api/streams/status'),
         api.get('/api/streams/listeners'),
+        api.get('/api/pipelines').catch(() => []),
       ])
       setConfigs(config)
       setStatuses(status)
       setListeners(ls)
+      setPipelines((pl || []).map((p) => p.name).filter(Boolean))
       setError(null)
     } catch (err) {
       setError(err.message)
@@ -73,6 +76,7 @@ export default function StreamsPanel() {
         <StreamForm
           initial={editing === 'new' ? null : editing}
           listeners={listeners}
+          pipelines={pipelines}
           onSaved={() => {
             setEditing(null)
             load()

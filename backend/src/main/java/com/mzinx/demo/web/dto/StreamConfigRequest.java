@@ -27,7 +27,9 @@ public record StreamConfigRequest(
         FullDocumentBeforeChange fullDocumentBeforeChange,
         List<Map<String, Object>> pipeline,
         String listener,
-        Boolean enabled) {
+        Boolean enabled,
+        /** Free-form, listener-defined settings (e.g. {@code outputPipeline}). */
+        Map<String, Object> attributes) {
 
     public ChangeStreamConfig toConfig() {
         return ChangeStreamConfig.builder()
@@ -43,6 +45,7 @@ public record StreamConfigRequest(
                 .pipeline(pipeline == null ? List.of() : pipeline.stream().map(Document::new).toList())
                 .listener(listener)
                 .enabled(enabled == null || enabled)
+                .attributes(attributes)
                 .build();
     }
 }

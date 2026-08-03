@@ -6,12 +6,21 @@ const RESUME_STRATEGIES = ['NONE', 'PER_EVENT', 'PER_BATCH', 'INTERVAL']
 const FULL_DOCUMENT = ['', 'DEFAULT', 'UPDATE_LOOKUP', 'WHEN_AVAILABLE', 'REQUIRED']
 const FULL_DOCUMENT_BEFORE_CHANGE = ['', 'DEFAULT', 'OFF', 'WHEN_AVAILABLE', 'REQUIRED']
 
+// The listener bean that consumes an output pipeline, and the attribute key that
+// names it (ChangeStreamConfig.attributes). Kept in sync with the backend
+// MaterializedViewListener.BEAN_NAME / ATTR_OUTPUT_PIPELINE constants.
+const MATERIALIZED_VIEW_LISTENER = 'materializedViewListener'
+const ATTR_OUTPUT_PIPELINE = 'outputPipeline'
+
 /**
  * Create / edit form for a change stream definition
  * (persisted through ChangeStreamConfigService on the backend).
  */
-export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
+export default function StreamForm({ initial, listeners, pipelines = [], onSaved, onCancel }) {
   const editing = Boolean(initial?.id)
+  // Keep the full attributes map so we round-trip any listener-defined keys we
+  // don't surface in the form; we only edit outputPipeline here.
+  const initialAttributes = initial?.attributes ?? {}
   const [form, setForm] = useState({
     id: initial?.id ?? '',
     collectionName: initial?.collectionName ?? '',
@@ -25,6 +34,7 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
     listener: initial?.listener ?? (listeners.includes('consoleLog') ? 'consoleLog' : listeners[0] ?? ''),
     enabled: initial?.enabled ?? true,
     pipeline: JSON.stringify(initial?.pipeline ?? [], null, 2),
+    outputPipeline: initialAttributes[ATTR_OUTPUT_PIPELINE] ?? '',
   })
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -43,6 +53,19 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
       setError(`Invalid pipeline JSON: ${err.message}`)
       return
     }
+    // The materialized-view listener requires an output pipeline to run.
+    if (form.listener === MATERIALIZED_VIEW_LISTENER && !form.outputPipeline) {
+      setError('Output pipeline is required for the materializedViewListener.')
+      return
+    }
+    // Preserve any listener-defined attributes we don't edit here. The output
+    // pipeline only applies to the materialized-view listener; set it when that
+    // listener is selected, otherwise drop it so it doesn't linger on the config.
+    const attributes = { ...initialAttributes }
+    if (form.listener === MATERIALIZED_VIEW_LISTENER && form.outputPipeline)
+      attributes[ATTR_OUTPUT_PIPELINE] = form.outputPipeline
+    else delete attributes[ATTR_OUTPUT_PIPELINE]
+
     setSaving(true)
     try {
       await api.post('/api/streams', {
@@ -58,6 +81,7 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
         listener: form.listener,
         enabled: form.enabled,
         pipeline,
+        attributes: Object.keys(attributes).length ? attributes : null,
       })
       onSaved()
     } catch (err) {
@@ -96,6 +120,22 @@ export default function StreamForm({ initial, listeners, onSaved, onCancel }) {
             ))}
           </select>
         </label>
+        {form.listener === MATERIALIZED_VIEW_LISTENER && (
+          <label>
+            Output pipeline <small>(required for this listener)</small>
+            <select value={form.outputPipeline} onChange={set('outputPipeline')}>
+              <option value="">(none)</option>
+              {form.outputPipeline && !pipelines.includes(form.outputPipeline) && (
+                <option value={form.outputPipeline}>{form.outputPipeline}</option>
+              )}
+              {pipelines.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Resume strategy
           <select value={form.resumeStrategy} onChange={set('resumeStrategy')}>
