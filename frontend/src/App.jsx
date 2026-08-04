@@ -7,6 +7,7 @@ import DashboardPanel from './components/DashboardPanel.jsx'
 import LiveEventsPanel from './components/LiveEventsPanel.jsx'
 import AggregationPanel from './components/AggregationPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
+import AdminGate from './components/AdminGate.jsx'
 
 const TABS = ['Dashboard', 'Orders', 'Messaging', 'Admin']
 const CHANNELS = ['/sync', '/cmd']
@@ -186,10 +187,12 @@ export default function App() {
           <MessagingPanel events={events} me={me} activeSessions={activeSessions} addEvent={addEvent} />
         )}
         {tab === 'Admin' && (
-          <div className="admin">
-            <StreamsPanel />
-            <AggregationPanel />
-          </div>
+          <AdminGate>
+            <div className="admin">
+              <StreamsPanel />
+              <AggregationPanel />
+            </div>
+          </AdminGate>
         )}
         <LiveEventsPanel events={events} onClear={() => setEvents([])} />
       </main>

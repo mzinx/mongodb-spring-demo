@@ -559,6 +559,24 @@ button.link.active {
   flex-direction: column;
 }
 
+.admin-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.admin-login {
+  max-width: 420px;
+}
+
+.admin-login form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* ---------- messaging: active sessions + private chat ---------- */
 .session-list {
   list-style: none;

@@ -20,6 +20,10 @@ spec:
         env:
         - name: MONGODB_URI
           value: "${MONGODB_URI}"
+        - name: ADMIN_USERNAME
+          value: "${ADMIN_USERNAME}"
+        - name: ADMIN_PASSWORD
+          value: "${ADMIN_PASSWORD}"
         - name: HOSTNAME
           valueFrom:
             fieldRef:
