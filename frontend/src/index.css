@@ -552,13 +552,6 @@ button.link.active {
   width: 100%;
 }
 
-/* ---------- admin ---------- */
-.admin {
-  gap: 18px;
-  display: flex;
-  flex-direction: column;
-}
-
 /* ---------- messaging: active sessions + private chat ---------- */
 .session-list {
   list-style: none;

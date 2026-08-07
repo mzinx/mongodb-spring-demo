@@ -12,12 +12,12 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
- * Permissive security setup for the demo.
+ * Security setup for the demo.
  * <p>
- * Spring Security is on the classpath (transitively via the mongodb-spring
- * libraries), so without this configuration every endpoint would require
- * authentication. A real application should of course lock these endpoints
- * down.
+ * Spring Security is on the classpath (pulled in transitively by Spring
+ * Session), so this configuration keeps the whole site public and only wires
+ * up CORS for the Vite dev server. Without an explicit permit-all chain,
+ * Spring Boot's default auto-configuration would lock every endpoint down.
  */
 @Configuration
 public class SecurityConfig {
@@ -37,6 +37,9 @@ public class SecurityConfig {
         config.setAllowedOriginPatterns(List.of("*"));
         config.setAllowedMethods(List.of("*"));
         config.setAllowedHeaders(List.of("*"));
+        // Required so the browser will attach cookies on cross-origin
+        // (dev-server) requests.
+        config.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
