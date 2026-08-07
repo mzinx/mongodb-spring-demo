@@ -27,8 +27,6 @@ steps:
         -e "s|\$${MIN_REPLICAS}|${_MIN_REPLICAS}|g" \
         -e "s|\$${MAX_REPLICAS}|${_MAX_REPLICAS}|g" \
         -e "s|\$${MONGODB_URI}|${_MONGODB_URI}|g" \
-        -e "s|\$${ADMIN_USERNAME}|${_ADMIN_USERNAME}|g" \
-        -e "s|\$${ADMIN_PASSWORD}|${_ADMIN_PASSWORD}|g" \
         gke/*.yaml
       gcloud container clusters get-credentials --project="$PROJECT_ID" --zone="${_ZONE}" "${_CLUSTER}"
       kubectl apply -f gke/
