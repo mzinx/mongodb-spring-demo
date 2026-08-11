@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { stompClient } from './stomp.js'
-import StreamsPanel from './components/StreamsPanel.jsx'
 import OrdersPanel from './components/OrdersPanel.jsx'
 import DashboardPanel from './components/DashboardPanel.jsx'
 import LiveEventsPanel from './components/LiveEventsPanel.jsx'
-import AggregationPanel from './components/AggregationPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
 
-const TABS = ['Dashboard', 'Orders', 'Messaging', 'Admin']
+const TABS = ['Dashboard', 'Orders', 'Messaging']
 const CHANNELS = ['/sync', '/cmd']
 const MAX_EVENTS = 300
 
@@ -151,7 +149,7 @@ export default function App() {
           <span className="brand-logo">⧉</span>
           <div>
             <h1>mongodb-spring demo</h1>
-            <span className="subtitle">change streams · discovery · sessions · messaging · aggregation</span>
+            <span className="subtitle">discovery · sessions · messaging · live data</span>
           </div>
         </div>
         <div className="topbar-right">
@@ -184,12 +182,6 @@ export default function App() {
         {tab === 'Orders' && <OrdersPanel events={events} />}
         {tab === 'Messaging' && (
           <MessagingPanel events={events} me={me} activeSessions={activeSessions} addEvent={addEvent} />
-        )}
-        {tab === 'Admin' && (
-          <div className="admin">
-            <StreamsPanel />
-            <AggregationPanel />
-          </div>
         )}
         <LiveEventsPanel events={events} onClear={() => setEvents([])} />
       </main>

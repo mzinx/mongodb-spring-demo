@@ -4,10 +4,18 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 | Library | Demonstrated by |
 |---|---|
-| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | Web UI to create / configure / start / stop change streams, live runtime status (mode, leader, term, epoch, members) |
+| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded `order-summary` stream (mode `AUTO_RECOVER`) that precomputes the Dashboard summaries; live runtime status shown on the Dashboard |
+| [`mongodb-spring-materialized-view`](../mongodb-spring-materialized-view) | The generic `materializedViewListener` that runs the `order-summary` stream to maintain the `orderSummaries` view |
 | [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
 | [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
-| [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline template CRUD (`_pipelines`) and execution with `{"_ph": "variable"}` placeholder substitution |
+| [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener and the Orders `$facet` pagination |
+
+> **Managing the streams:** this demo is a *business app* — it **runs** its own
+> streams (the `order-summary` materialized view, the message queue, discovery).
+> The seeded configs are `runOn=BUSINESS`. To create/edit/start/stop streams and
+> pipelines from a UI, run the companion [`mongostream`](../mongostream) console
+> against the **same database**: it manages the configs but does not execute the
+> business streams. See its README for the `runOn` role model.
 
 ## Architecture
 
@@ -16,10 +24,10 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 │  frontend (React + Vite)  │  REST  │  backend (Spring Boot 4)                  │
 │  http://localhost:5173    │───────▶│  http://localhost:8080                    │
 │                           │        │                                           │
-│  Streams / Orders /       │ STOMP  │  REST API  ── ChangeStreamConfigService   │
-│  Dashboard / Aggregations │  /ws   │            ── ChangeStreamManager (status)│
-│  Messaging / Live events  │◀──────▶│  /ws STOMP ── message-queuing module      │
-└───────────────────────────┘        │  orderSummaryListener ─▶ orderSummaries   │
+│  Dashboard / Orders /     │ STOMP  │  REST API  ── ChangeStreamConfigService   │
+│  Messaging / Live events  │  /ws   │            ── ChangeStreamManager (status)│
+│                           │◀──────▶│  /ws STOMP ── message-queuing module      │
+└───────────────────────────┘        │  materializedViewListener ─▶ orderSummaries│
                                      └──────────────────┬────────────────────────┘
                                                         │ change streams, heartbeats,
                                                         │ configs, resume tokens
@@ -28,11 +36,12 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
                                                  └─────────────┘
 ```
 
-- **backend/** — Spring Boot 4 service consuming all four libraries. It only adds thin
-  REST controllers on top of the libraries' public APIs plus two demo
-  `ChangeStreamListener` beans: `orderSummaryListener` precomputes the daily order
-  summary collection (`orderSummaries`) by running the `orders-daily-summary`
-  pipeline template with `$merge`, and `consoleLog` just logs.
+- **backend/** — Spring Boot 4 service consuming the libraries. It only adds thin
+  REST controllers on top of their public APIs. The `materializedViewListener`
+  (from `mongodb-spring-materialized-view`) recomputes the daily order summary
+  collection (`orderSummaries`) by running the `orders-daily-summary` pipeline
+  template with `$merge`; a small `ViewRefreshBroadcaster` turns each recompute
+  event into a `/cmd` refresh broadcast for live clients.
 - **frontend/** — React SPA (Vite). In dev mode it proxies `/api` and `/ws` to the backend.
 
 ## Prerequisites
@@ -81,35 +90,25 @@ http://localhost:8080.
 
 ## Demo walkthrough
 
-1. **Streams** — on first start a stream `order-summary` is seeded (collection
-   `orders`, mode `AUTO_RECOVER`, listener `orderSummaryListener`). Create your own
-   stream: pick a mode (`BROADCAST` / `AUTO_RECOVER` / `AUTO_SCALE`), a resume
-   strategy, an optional aggregation pipeline (e.g.
-   `[{"$match": {"operationType": "insert"}}]`) and a listener bean. Definitions are
-   persisted to `_changeStreamConfigs`; the library's reconciler
-   starts/restarts/stops streams within ~10 s
-   (`change-stream.config-refresh-interval`). The table shows live runtime status
-   straight from `ChangeStreamManager`: running flag, leader + fencing term, member
-   instances and epoch.
+1. **Dashboard** — daily order summary (orders, revenue, avg value, per-status
+   counts). It is *precomputed*: on first start a stream `order-summary` is seeded
+   (collection `orders`, mode `AUTO_RECOVER`, listener `materializedViewListener`,
+   `runOn=BUSINESS`, persisted in `_changeStreamConfigs`). That change stream triggers
+   `materializedViewListener`, which re-runs the `orders-daily-summary` pipeline template
+   (`$merge` into `orderSummaries`). Because the
+   stream runs in `AUTO_RECOVER` mode, exactly one instance (the leader) recomputes;
+   the header line shows live runtime status straight from `ChangeStreamManager`
+   (leader + running flag). `orderSummaries` is also in
+   `messaging.watch-collections`, so the dashboard refreshes live as summaries change.
 2. **Orders** — paginated view of the `orders` collection (paged through the
    aggregation library's `$facet` pagination), with generator buttons to
    insert/update/delete random documents. The message-queuing live-data service
    watches `orders` and broadcasts a REFRESH command on `/cmd` for every change, so
    the page updates in real time — try writing from `mongosh` while it's open.
-3. **Dashboard** — daily order summary (orders, revenue, avg value, per-status
-   counts). It is *precomputed*: the `order-summary` change stream triggers
-   `orderSummaryListener`, which re-runs the `orders-daily-summary` pipeline template
-   (`$merge` into `orderSummaries`, with a `{"_ph": "runId"}` variable). Because the
-   stream runs in `AUTO_RECOVER` mode, exactly one instance (the leader) recomputes.
-   `orderSummaries` is also in `messaging.watch-collections`, so the dashboard
-   refreshes live as summaries change.
-4. **Live Events** — the raw WebSocket (STOMP) feed:
+3. **Live Events** — the raw WebSocket (STOMP) feed:
    - `/sync`: changed documents from watched collections (`orders`, `orderSummaries`),
    - `/cmd`: REFRESH commands and messaging ACK/RES.
-5. **Aggregations** — edit/save pipeline templates and run them. Try the seeded
-   `orders-by-status` template with variables `{"status": "PENDING"}` to see
-   `{"_ph": ...}` placeholder substitution.
-6. **Messaging** — private messaging backed by **Spring Session (MongoDB)**. On load
+4. **Messaging** — private messaging backed by **Spring Session (MongoDB)**. On load
    each browser is prompted for a display name, which is stored on its Spring Session
    (persisted in the `sessions` collection via `@EnableMongoHttpSession`, so identity
    is stable across reconnects and shared across backend instances).    To keep session
@@ -145,7 +144,7 @@ http://localhost:8080.
    `message-service` change stream, but only the target session's subscriber receives
    it. Open a second browser (or a private window) to see another session appear in the
    roster and exchange private messages.
-7. **Multi-instance modes** — start a second backend instance to see discovery and the
+5. **Multi-instance modes** — start a second backend instance to see discovery and the
    coordination modes in action:
 
    ```bash
@@ -158,16 +157,13 @@ http://localhost:8080.
 
 ## REST API (backend)
 
+This app is a business app, not a stream-management console, so it exposes no
+stream/pipeline CRUD endpoints (use the [`mongostream`](../mongostream) console
+for that). It only reads what it needs to render the demo:
+
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/streams` | Persisted change stream definitions |
-| POST | `/api/streams` | Create / reconfigure a stream |
-| POST | `/api/streams/{id}/start` | Enable (start) a stream |
-| POST | `/api/streams/{id}/stop` | Disable (stop) a stream |
-| DELETE | `/api/streams/{id}` | Delete a stream definition |
-| GET | `/api/streams/status` | Runtime status of all registered streams |
-| GET | `/api/streams/{id}/status` | Runtime status of one stream |
-| GET | `/api/streams/listeners` | Available `ChangeStreamListener` bean names |
+| GET | `/api/summary` | Daily order summaries (the materialized `orderSummaries` view) |
 | GET | `/api/instances` | Live instances (discovery heartbeats) |
 | GET | `/api/session/me` | Current browser's Spring Session id, private channel and display name |
 | POST | `/api/session/name` | Set the display name on the Spring Session |
@@ -175,8 +171,6 @@ http://localhost:8080.
 | GET | `/api/data/orders?page=&size=` | Paginated orders (aggregation library `$facet` pagination) |
 | POST | `/api/data/orders/insert`, `/update-random`, `/delete-random` | Test data generator |
 | GET | `/api/summary` | Precomputed daily order summaries |
-| GET/PUT/DELETE | `/api/pipelines`, `/api/pipelines/{name}` | Aggregation pipeline templates |
-| POST | `/api/aggregations/run` | Run a pipeline (inline stages or saved template + variables) |
 
 > Security note: the demo permits all requests and disables CSRF
 > (`SecurityConfig`) to keep it friction-free. Do not reuse as-is in production.

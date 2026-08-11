@@ -32,14 +32,15 @@ function applySyncEvent(list, content) {
 }
 
 /**
- * Daily order summary dashboard.
+ * Read-only daily order summary dashboard.
  *
  * The data is NOT aggregated on page load: it is precomputed into the
- * `orderSummaries` collection by the `orderSummaryListener` change stream
- * listener (stream `order-summary`, AUTO_RECOVER mode - only the elected
- * leader instance recomputes). The summary collection is in
- * `messaging.watch-collections`, so the live-data service pushes the changed
- * summary documents on `/sync`.
+ * `orderSummaries` collection by the `order-summary` materialized-view change
+ * stream (AUTO_RECOVER mode). This app seeds that stream's config
+ * (DemoDataSeeder); the companion <em>mongostream</em> app executes it against
+ * the shared database. This demo only reads and live-updates the view. Because
+ * `orderSummaries` is in `messaging.watch-collections`, the live-data service
+ * pushes the changed summary documents on `/sync`.
  *
  * Rather than re-fetching the whole list from the API on every change, this
  * page applies those `/sync` payloads directly to the in-memory view: the
@@ -50,7 +51,6 @@ function applySyncEvent(list, content) {
  */
 export default function DashboardPanel({ events }) {
   const [summaries, setSummaries] = useState([])
-  const [streamStatus, setStreamStatus] = useState(null)
   const [error, setError] = useState(null)
   const [refreshedAt, setRefreshedAt] = useState(null)
   // Id of the most recent event we've already applied, so we only process new
@@ -59,13 +59,10 @@ export default function DashboardPanel({ events }) {
 
   const load = useCallback(
     (silent = false) =>
-      Promise.all([
-        api.get('/api/summary'),
-        api.get('/api/streams/order-summary/status').catch(() => null),
-      ])
-        .then(([data, status]) => {
+      api
+        .get('/api/summary')
+        .then((data) => {
           setSummaries(sortByDayDesc(data || []))
-          setStreamStatus(status)
           if (silent) setRefreshedAt(new Date())
           setError(null)
         })
@@ -76,23 +73,6 @@ export default function DashboardPanel({ events }) {
   useEffect(() => {
     load()
   }, [load])
-
-  // The summary data now updates from /sync, but the AUTO_RECOVER stream status
-  // (which instance is leader / where it's running) isn't part of that feed, so
-  // poll it periodically to keep the header line current.
-  useEffect(() => {
-    let alive = true
-    const timer = setInterval(() => {
-      api
-        .get('/api/streams/order-summary/status')
-        .then((status) => alive && setStreamStatus(status))
-        .catch(() => {})
-    }, 10000)
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [])
 
   // Real-time: apply the changed summary documents that arrive on /sync directly
   // to the view, instead of reloading everything from the API.
@@ -132,11 +112,10 @@ export default function DashboardPanel({ events }) {
         <div>
           <h2>Daily order summary</h2>
           <p className="hint">
-            Precomputed by the <code>order-summary</code> change stream (AUTO_RECOVER: leader{' '}
-            <strong>{streamStatus?.leader ?? 'electing…'}</strong>
-            {streamStatus ? (streamStatus.running ? ', running on this instance' : ', running elsewhere') : ''}
-            ) executing its configured output pipeline with <code>$merge</code>. Change the pipeline on the{' '}
-            <strong>Change streams</strong> page (edit <code>order-summary</code>).
+            Read-only view precomputed into <code>orderSummaries</code> by the companion{' '}
+            <strong>mongostream</strong> app (its <code>order-summary</code> materialized-view change
+            stream running <code>$merge</code>) on the same database. Insert orders on the{' '}
+            <strong>Orders</strong> page and watch this update live over <code>/sync</code>.
           </p>
         </div>
         <div className="row-actions">
