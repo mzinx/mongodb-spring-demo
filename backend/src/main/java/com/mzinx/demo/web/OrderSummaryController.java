@@ -10,15 +10,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mongodb.client.model.Sorts;
-import com.mzinx.demo.listener.MaterializedViewListener;
 
 /**
- * Daily order summary API backing the dashboard page. The summaries are
- * precomputed into the output collection by the generic
- * {@link MaterializedViewListener}, driven by the {@code order-summary} change
- * stream. Which aggregation pipeline produces them is configured on that change
- * stream's {@code attributes.outputPipeline} (edited from the Change streams
- * page), not here.
+ * Read-only daily order summary API backing the dashboard page. The summaries
+ * are precomputed into the {@code orderSummaries} collection by this app's
+ * {@code order-summary} materialized-view change stream (seeded in
+ * {@code DemoDataSeeder} and executed here by the {@code materializedViewListener}
+ * from {@code mongodb-spring-materialized-view}). This endpoint only reads the
+ * resulting view.
  */
 @RestController
 @RequestMapping("/api/summary")

@@ -9,22 +9,31 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
-import com.mzinx.demo.listener.MaterializedViewListener;
 import com.mzinx.mongodb.aggregation.dao.PipelineRepository;
 import com.mzinx.mongodb.aggregation.model.PipelineTemplate;
 import com.mzinx.mongodb.changestream.model.ChangeStream.Mode;
 import com.mzinx.mongodb.changestream.model.ChangeStream.ResumeStrategy;
 import com.mzinx.mongodb.changestream.model.ChangeStreamConfig;
 import com.mzinx.mongodb.changestream.service.ChangeStreamConfigService;
+import com.mzinx.mongodb.materializedview.listener.MaterializedViewListener;
 
 /**
- * Seeds demo artifacts on first start:
+ * Seeds the {@code order-summary} materialized-view demo on first start, so the
+ * dashboard has something to show without any manual setup (all idempotent —
+ * created only if absent).
+ * <p>
+ * The demo runs the seeded {@code order-summary} stream itself: it depends on
+ * {@code mongodb-spring-materialized-view}, so the {@code materializedViewListener}
+ * bean is present and recomputes the {@code orderSummaries} view on every change
+ * to {@code orders}. The companion <em>mongostream</em> app only <em>manages</em>
+ * these configs/pipelines (it shares the same database); it does not run them.
+ * <p>
+ * Seeded artifacts:
  * <ul>
- * <li>the {@code order-summary} change stream config driving the generic
- * {@link MaterializedViewListener} (AUTO_RECOVER: one leader instance
- * precomputes, with automatic failover). Its {@code attributes.outputPipeline}
- * selects which pipeline the listener runs — seeded to the default below,
- * changeable at runtime from the Change streams page.</li>
+ * <li>the {@code order-summary} change stream config (AUTO_RECOVER: one leader
+ * instance recomputes, with automatic failover), targeting the
+ * {@code materializedViewListener}. Its {@code attributes.outputPipeline}
+ * selects which pipeline the listener runs.</li>
  * <li>the default {@code orders-daily-summary} output pipeline template it
  * executes (the terminal {@code $merge} replaces documents by {@code _id})</li>
  * <li>two more pipeline templates for the Aggregations page</li>
@@ -33,7 +42,7 @@ import com.mzinx.mongodb.changestream.service.ChangeStreamConfigService;
 @Component
 public class DemoDataSeeder implements ApplicationRunner {
 
-    /** The change stream id (in this demo) that materializes the order summary. */
+    /** The change stream id that materializes the order summary. */
     public static final String ORDER_SUMMARY_STREAM_ID = "order-summary";
     public static final String ORDERS_DAILY_SUMMARY_PIPELINE = "orders-daily-summary";
     public static final String ORDERS_COLLECTION = "orders";
@@ -43,25 +52,14 @@ public class DemoDataSeeder implements ApplicationRunner {
 
     private final ChangeStreamConfigService changeStreamConfigService;
     private final PipelineRepository pipelineRepository;
-    private final MaterializedViewListener materializedViewListener;
-    
 
-    DemoDataSeeder(ChangeStreamConfigService changeStreamConfigService, PipelineRepository pipelineRepository,
-            MaterializedViewListener materializedViewListener) {
+    DemoDataSeeder(ChangeStreamConfigService changeStreamConfigService, PipelineRepository pipelineRepository) {
         this.changeStreamConfigService = changeStreamConfigService;
         this.pipelineRepository = pipelineRepository;
-        this.materializedViewListener = materializedViewListener;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        // Clean up the config seeded by earlier demo versions; its listener
-        // bean (eventRelay) no longer exists.
-        if (changeStreamConfigService.findById("orders-demo") != null) {
-            logger.info("Removing legacy demo change stream config 'orders-demo'");
-            changeStreamConfigService.delete("orders-demo");
-        }
-
         if (pipelineRepository.findById(ORDERS_DAILY_SUMMARY_PIPELINE).isEmpty()) {
             logger.info("Seeding pipeline template '{}'", ORDERS_DAILY_SUMMARY_PIPELINE);
             pipelineRepository.save(PipelineTemplate.builder()
@@ -100,17 +98,20 @@ public class DemoDataSeeder implements ApplicationRunner {
             changeStreamConfigService.save(ChangeStreamConfig.builder()
                     .id(ORDER_SUMMARY_STREAM_ID)
                     .collectionName(ORDERS_COLLECTION)
+                    // Runs on the business app (this demo), which has the
+                    // materializedViewListener. mongostream shares the database but
+                    // only manages this config.
+                    .runOn(ChangeStreamConfig.RunOn.BUSINESS)
                     // only the elected leader recomputes; failover is automatic
                     .mode(Mode.AUTO_RECOVER)
                     // resume missed order changes after a restart
                     .resumeStrategy(ResumeStrategy.PER_BATCH)
                     .pipeline(List.of())
                     .listener(MaterializedViewListener.BEAN_NAME)
-                    // The output pipeline is required and selectable at runtime (Change
-                    // streams page); seed the default so the listener has a pipeline to run.
+                    // The output pipeline is required and selectable at runtime;
+                    // seed the default so the listener has a pipeline to run.
                     .attributes(new java.util.HashMap<>(Map.of(
-                            MaterializedViewListener.ATTR_OUTPUT_PIPELINE,
-                            ORDERS_DAILY_SUMMARY_PIPELINE)))
+                            MaterializedViewListener.ATTR_OUTPUT_PIPELINE, ORDERS_DAILY_SUMMARY_PIPELINE)))
                     .enabled(true)
                     .build());
         }
@@ -140,10 +141,5 @@ public class DemoDataSeeder implements ApplicationRunner {
                             Map.of("$limit", 20)))
                     .build());
         }
-
-        // Initial computation so the dashboard has data before the first change.
-        ChangeStreamConfig summaryConfig = changeStreamConfigService.findById(ORDER_SUMMARY_STREAM_ID);
-        materializedViewListener.recompute(ORDERS_COLLECTION, ORDER_SUMMARY_STREAM_ID,
-                summaryConfig != null ? summaryConfig.getAttributes() : null);
     }
 }

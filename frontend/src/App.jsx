@@ -149,7 +149,7 @@ export default function App() {
           <span className="brand-logo">⧉</span>
           <div>
             <h1>mongodb-spring demo</h1>
-            <span className="subtitle">change streams · discovery · sessions · messaging · aggregation</span>
+            <span className="subtitle">discovery · sessions · messaging · live data</span>
           </div>
         </div>
         <div className="topbar-right">
