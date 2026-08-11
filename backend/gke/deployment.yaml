@@ -36,10 +36,10 @@ spec:
         livenessProbe:
           initialDelaySeconds: 50
           httpGet:
-            path: /api/streams
+            path: /api/instances
             port: 8080
         readinessProbe:
           initialDelaySeconds: 50
           httpGet:
-            path: /api/streams
+            path: /api/instances
             port: 8080
