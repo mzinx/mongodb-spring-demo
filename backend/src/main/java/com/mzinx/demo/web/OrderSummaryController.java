@@ -16,7 +16,7 @@ import com.mongodb.client.model.Sorts;
  * are precomputed into the {@code orderSummaries} collection by this app's
  * {@code order-summary} materialized-view change stream (seeded in
  * {@code DemoDataSeeder} and executed here by the {@code materializedViewListener}
- * from {@code mongodb-spring-materialized-view}). This endpoint only reads the
+ * from {@code mongodb-spring-sink}). This endpoint only reads the
  * resulting view.
  */
 @RestController

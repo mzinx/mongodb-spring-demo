@@ -15,7 +15,7 @@ import com.mzinx.mongodb.changestream.model.ChangeStream.Mode;
 import com.mzinx.mongodb.changestream.model.ChangeStream.ResumeStrategy;
 import com.mzinx.mongodb.changestream.model.ChangeStreamConfig;
 import com.mzinx.mongodb.changestream.service.ChangeStreamConfigService;
-import com.mzinx.mongodb.materializedview.listener.MaterializedViewListener;
+import com.mzinx.mongodb.sink.listener.MaterializedViewListener;
 
 /**
  * Seeds the {@code order-summary} materialized-view demo on first start, so the
@@ -23,7 +23,7 @@ import com.mzinx.mongodb.materializedview.listener.MaterializedViewListener;
  * created only if absent).
  * <p>
  * The demo runs the seeded {@code order-summary} stream itself: it depends on
- * {@code mongodb-spring-materialized-view}, so the {@code materializedViewListener}
+ * {@code mongodb-spring-sink}, so the {@code materializedViewListener}
  * bean is present and recomputes the {@code orderSummaries} view on every change
  * to {@code orders}. The companion <em>mongostream</em> app only <em>manages</em>
  * these configs/pipelines (it shares the same database); it does not run them.

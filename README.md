@@ -5,7 +5,7 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 | Library | Demonstrated by |
 |---|---|
 | [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded `order-summary` stream (mode `AUTO_RECOVER`) that precomputes the Dashboard summaries; live runtime status shown on the Dashboard |
-| [`mongodb-spring-materialized-view`](../mongodb-spring-materialized-view) | The generic `materializedViewListener` that runs the `order-summary` stream to maintain the `orderSummaries` view |
+| [`mongodb-spring-sink`](../mongodb-spring-sink) | The generic `materializedViewListener` that runs the `order-summary` stream to maintain the `orderSummaries` view (also provides the event-driven `changeMirrorListener`) |
 | [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
 | [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
 | [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener and the Orders `$facet` pagination |
@@ -38,7 +38,7 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 - **backend/** — Spring Boot 4 service consuming the libraries. It only adds thin
   REST controllers on top of their public APIs. The `materializedViewListener`
-  (from `mongodb-spring-materialized-view`) recomputes the daily order summary
+  (from `mongodb-spring-sink`) recomputes the daily order summary
   collection (`orderSummaries`) by running the `orders-daily-summary` pipeline
   template with `$merge`; a small `ViewRefreshBroadcaster` turns each recompute
   event into a `/cmd` refresh broadcast for live clients.

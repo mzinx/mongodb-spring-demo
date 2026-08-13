@@ -44,26 +44,25 @@
 
 		<!-- mongodb-spring libraries under demonstration.
 		     message-queuing transitively brings change-stream + aggregation
-		     + websocket; materialized-view provides the generic
-		     materializedViewListener that executes the seeded order-summary
-		     stream (and publishes a recompute event the messaging layer turns
-		     into a /cmd refresh broadcast); discovery provides instance
-		     heartbeats needed by the AUTO_RECOVER / AUTO_SCALE change stream
-		     modes. -->
+		     + websocket; sink provides the generic materializedViewListener
+		     that executes the seeded order-summary stream (and publishes a
+		     recompute event the messaging layer turns into a /cmd refresh
+		     broadcast); discovery provides instance heartbeats needed by the
+		     AUTO_RECOVER / AUTO_SCALE change stream modes. -->
 		<dependency>
 			<groupId>com.mzinx</groupId>
 			<artifactId>mongodb-spring-message-queuing</artifactId>
-			<version>1.1.2</version>
+			<version>1.1.2-SNAPSHOT</version>
 		</dependency>
 		<dependency>
 			<groupId>com.mzinx</groupId>
-			<artifactId>mongodb-spring-materialized-view</artifactId>
-			<version>1.0.0</version>
+			<artifactId>mongodb-spring-sink</artifactId>
+			<version>1.0.1-SNAPSHOT</version>
 		</dependency>
 		<dependency>
 			<groupId>com.mzinx</groupId>
 			<artifactId>mongodb-spring-discovery</artifactId>
-			<version>1.0.3</version>
+			<version>1.0.3-SNAPSHOT</version>
 		</dependency>
 
 		<dependency>

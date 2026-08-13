@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-import com.mzinx.mongodb.materializedview.model.MaterializedViewRecomputedEvent;
+import com.mzinx.mongodb.sink.model.MaterializedViewRecomputedEvent;
 import com.mzinx.mongodb.messaging.command.CommandMessages;
 import com.mzinx.mongodb.messaging.service.MessageService;
 
