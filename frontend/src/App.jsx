@@ -26,6 +26,11 @@ export default function App() {
   const [activeSessions, setActiveSessions] = useState([])
   const meRef = useRef(null)
   const counter = useRef(0)
+  // Active STOMP subscriptions, so a reconnect can drop the previous ones before
+  // re-subscribing — otherwise onConnect (which fires on every reconnect) would
+  // accumulate duplicate subscriptions and every broadcast would be counted once
+  // per accumulated subscription.
+  const subscriptions = useRef([])
 
   const addEvent = useCallback((channel, body) => {
     let payload
@@ -92,10 +97,27 @@ export default function App() {
 
       stompClient.onConnect = () => {
         setConnected(true)
-        CHANNELS.forEach((dest) => stompClient.subscribe(dest, (msg) => handleMessage(dest, msg.body)))
+        // onConnect fires on every (re)connect. Drop any subscriptions from a
+        // previous connection first so they don't accumulate — otherwise each
+        // broadcast would be delivered once per stale subscription (the "6×
+        // REFRESH" symptom).
+        subscriptions.current.forEach((sub) => {
+          try {
+            sub.unsubscribe()
+          } catch {
+            /* subscription from a dead connection — ignore */
+          }
+        })
+        subscriptions.current = []
+
+        CHANNELS.forEach((dest) =>
+          subscriptions.current.push(stompClient.subscribe(dest, (msg) => handleMessage(dest, msg.body))),
+        )
         // Subscribe to our own private inbox so we receive DMs addressed to us.
         if (meRef.current?.channel) {
-          stompClient.subscribe(meRef.current.channel, (msg) => addEvent(meRef.current.channel, msg.body))
+          subscriptions.current.push(
+            stompClient.subscribe(meRef.current.channel, (msg) => addEvent(meRef.current.channel, msg.body)),
+          )
         }
         // Re-fetch the roster now that we're connected: the connect-time PRESENCE
         // broadcast races with our /cmd subscription above (we may subscribe just

@@ -1,127 +1,96 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { useLiveRefresh } from '../useLiveRefresh.js'
 
-const STATUS_ORDER = ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED']
-const SUMMARY_COLLECTION = 'orderSummaries'
+const PERIODS = [
+  { key: 'day', label: 'Daily', collection: 'ordersByDay' },
+  { key: 'week', label: 'Weekly', collection: 'ordersByWeek' },
+  { key: 'month', label: 'Monthly', collection: 'ordersByMonth' },
+]
 
-/** Sort summaries by day id, newest first (matches the /api/summary order). */
-function sortByDayDesc(list) {
-  return [...list].sort((a, b) => (a._id < b._id ? 1 : a._id > b._id ? -1 : 0))
+// Preferred display order for the per-status breakdown; any other statuses
+// present in the data are appended alphabetically after these.
+const STATUS_ORDER = [
+  'PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED',
+  'OPEN', 'REFUNDED', 'VOID', 'AWAITING', 'DISPATCHED', 'COMPLETED', 'RETURNED',
+]
+
+/** Orders the keys of a byStatus map: known statuses first, then the rest. */
+function orderedStatuses(byStatus) {
+  const keys = Object.keys(byStatus || {})
+  const known = STATUS_ORDER.filter((s) => keys.includes(s))
+  const extra = keys.filter((s) => !STATUS_ORDER.includes(s)).sort()
+  return [...known, ...extra]
 }
 
 /**
- * Applies a single /sync change-stream event (as broadcast by the message-queuing
- * live-data listener) to the current summaries, returning a new array. The event
- * content shape is: { op, k, db, coll, doc?, changes? }.
- *  - insert/replace: `doc` is the full summary document -> upsert by _id
- *  - delete:         remove the document whose _id === k
- *  - update:         we don't get the full doc; caller falls back to an API load
- */
-function applySyncEvent(list, content) {
-  const op = content.op
-  if (op === 'insert' || op === 'replace') {
-    const doc = content.doc
-    if (!doc?._id) return list
-    const rest = list.filter((s) => s._id !== doc._id)
-    return sortByDayDesc([doc, ...rest])
-  }
-  if (op === 'delete') {
-    return list.filter((s) => s._id !== content.k)
-  }
-  return list
-}
-
-/**
- * Read-only daily order summary dashboard.
+ * Order summary dashboard, bucketed by period.
  *
- * The data is NOT aggregated on page load: it is precomputed into the
- * `orderSummaries` collection by the `order-summary` materialized-view change
- * stream (AUTO_RECOVER mode). This app seeds that stream's config
- * (DemoDataSeeder); the companion <em>mongostream</em> app executes it against
- * the shared database. This demo only reads and live-updates the view. Because
- * `orderSummaries` is in `messaging.watch-collections`, the live-data service
- * pushes the changed summary documents on `/sync`.
- *
- * Rather than re-fetching the whole list from the API on every change, this
- * page applies those `/sync` payloads directly to the in-memory view: the
- * initial state is loaded once from `/api/summary`, then each `/sync` event
- * upserts/removes the affected day. An UPDATE event (no full document) falls
- * back to a one-off API reload, which normally never happens here because the
- * recompute uses `$merge ... whenMatched: replace` (producing replace ops).
+ * The data is NOT aggregated on page load: it is precomputed from `unifiedOrders`
+ * by the `orders-by-day`, `orders-by-week` and `orders-by-month` materialized-view
+ * change streams (each a `$dateTrunc` rollup + `$merge`) into three DISTINCT
+ * collections — `ordersByDay`, `ordersByWeek`, `ordersByMonth`. This page reads
+ * the collection for the selected granularity and live-refreshes on that
+ * collection's changes (pushed via /cmd).
  */
 export default function DashboardPanel({ events }) {
-  const [summaries, setSummaries] = useState([])
+  const [period, setPeriod] = useState('day')
+  const [buckets, setBuckets] = useState([])
   const [error, setError] = useState(null)
   const [refreshedAt, setRefreshedAt] = useState(null)
-  // Id of the most recent event we've already applied, so we only process new
-  // /sync events (events[] is newest-first and shared across the whole app).
-  const lastEventId = useRef(0)
 
   const load = useCallback(
     (silent = false) =>
       api
-        .get('/api/summary')
-        .then((data) => {
-          setSummaries(sortByDayDesc(data || []))
+        .get(`/api/periods?period=${period}`)
+        .then((d) => {
+          setBuckets(d.content || [])
           if (silent) setRefreshedAt(new Date())
           setError(null)
         })
-        .catch((err) => setError(err.message)),
-    [],
+        .catch((e) => setError(e.message)),
+    [period],
   )
 
   useEffect(() => {
     load()
   }, [load])
 
-  // Real-time: apply the changed summary documents that arrive on /sync directly
-  // to the view, instead of reloading everything from the API.
-  useEffect(() => {
-    // Collect unprocessed /sync events for our collection, oldest first.
-    const fresh = []
-    for (const e of events) {
-      if (e.id <= lastEventId.current) break // events are newest-first
-      if (e.channel !== '/sync') continue
-      const content = e.payload?.content
-      if (content?.coll === SUMMARY_COLLECTION) fresh.push(e)
-    }
-    if (events.length) lastEventId.current = events[0].id
-    if (fresh.length === 0) return
+  const onRefresh = useCallback(() => load(true), [load])
+  // Refresh when the collection for the *selected* period changes.
+  const activeCollection = PERIODS.find((p) => p.key === period)?.collection ?? 'ordersByDay'
+  useLiveRefresh(events, activeCollection, onRefresh)
 
-    fresh.reverse() // apply in chronological order
-    // If any event is an UPDATE (no full doc), reload once to stay correct.
-    if (fresh.some((e) => e.payload.content.op === 'update')) {
-      load(true)
-      return
-    }
-    setSummaries((prev) => {
-      let next = prev
-      for (const e of fresh) next = applySyncEvent(next, e.payload.content)
-      return next
-    })
-    setRefreshedAt(new Date())
-  }, [events, load])
-
-  const today = new Date().toISOString().slice(0, 10)
-  const todaySummary = summaries[0]//summaries.find((s) => s._id === today)
-  const maxRevenue = Math.max(...summaries.map((s) => s.revenue ?? 0), 1)
+  // Newest bucket first (the API already sorts by bucketStart desc).
+  const latest = buckets[0]
+  const totalOrders = buckets.reduce((a, b) => a + (b.orders ?? 0), 0)
+  const totalRevenue = buckets.reduce((a, b) => a + (b.revenue ?? 0), 0)
+  const maxRevenue = Math.max(...buckets.map((b) => b.revenue ?? 0), 1)
+  const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? period
 
   return (
     <div className="panel">
       <div className="panel-header">
         <div>
-          <h2>Daily order summary</h2>
+          <h2>Order summary by period</h2>
           <p className="hint">
-            Read-only view precomputed into <code>orderSummaries</code> by the companion{' '}
-            <strong>mongostream</strong> app (its <code>order-summary</code> materialized-view change
-            stream running <code>$merge</code>) on the same database. Insert orders on the{' '}
-            <strong>Orders</strong> page and watch this update live over <code>/sync</code>.
+            Precomputed from <code>unifiedOrders</code> (the merge of all three channels) by{' '}
+            <code>$dateTrunc</code> rollup streams into three collections —{' '}
+            <code>ordersByDay</code> / <code>ordersByWeek</code> / <code>ordersByMonth</code>. Generate orders on
+            the <strong>Orders</strong> tab and watch buckets update live over <code>/sync</code>.
           </p>
         </div>
         <div className="row-actions">
+          <div className="row-actions toolbar">
+            {PERIODS.map((p) => (
+              <button key={p.key} className={period === p.key ? 'primary' : ''} onClick={() => setPeriod(p.key)}>
+                {p.label}
+              </button>
+            ))}
+          </div>
           {refreshedAt && (
-            <span className="pill ok" title="Applied from changed documents pushed on /sync">
-              live-updated {refreshedAt.toLocaleTimeString()}
+            <span className="pill ok" title="Applied from a REFRESH on /cmd">
+              live {refreshedAt.toLocaleTimeString()}
             </span>
           )}
         </div>
@@ -130,49 +99,61 @@ export default function DashboardPanel({ events }) {
       {error && <p className="error">{error}</p>}
 
       <div className="cards">
-        <Metric label={`Orders today (${todaySummary?._id})`} value={todaySummary?.orders ?? 0} />
-        <Metric label="Revenue today" value={fmt(todaySummary?.revenue)} />
-        <Metric label="Avg order value today" value={fmt(todaySummary?.avgOrderValue)} />
-        <Metric label="Days tracked" value={summaries.length} />
+        <Metric label={`Latest ${period} orders (${bucketLabel(latest)})`} value={latest?.orders ?? 0} />
+        <Metric label={`Latest ${period} revenue`} value={fmt(latest?.revenue)} />
+        <Metric label="Latest avg order value" value={fmt(latest?.avgOrderValue)} />
+        <Metric label={`${periodLabel} buckets`} value={buckets.length} />
+        <Metric label="Orders (all buckets)" value={totalOrders} />
+        <Metric label="Revenue (all buckets)" value={fmt(totalRevenue)} />
       </div>
 
       <table className="table">
         <thead>
           <tr>
-            <th>Day</th>
+            <th>{periodLabel} bucket</th>
             <th>Orders</th>
             <th>Revenue</th>
             <th>Avg order</th>
+            <th>Units</th>
             <th>By status</th>
+            <th>By product</th>
             <th>Computed at</th>
           </tr>
         </thead>
         <tbody>
-          {summaries.map((s) => (
-            <tr key={s._id}>
-              <td className="mono">{s._id}</td>
-              <td>{s.orders}</td>
+          {buckets.map((b) => (
+            <tr key={b._id}>
+              <td className="mono">{bucketLabel(b)}</td>
+              <td>{b.orders}</td>
               <td>
                 <div className="bar-cell">
-                  <span className="bar" style={{ width: `${((s.revenue ?? 0) / maxRevenue) * 100}%` }} />
-                  <span>{fmt(s.revenue)}</span>
+                  <span className="bar" style={{ width: `${((b.revenue ?? 0) / maxRevenue) * 100}%` }} />
+                  <span>{fmt(b.revenue)}</span>
                 </div>
               </td>
-              <td>{fmt(s.avgOrderValue)}</td>
+              <td>{fmt(b.avgOrderValue)}</td>
+              <td>{b.units}</td>
               <td>
-                {STATUS_ORDER.filter((st) => s.byStatus?.[st]).map((st) => (
+                {orderedStatuses(b.byStatus).map((st) => (
                   <span key={st} className={`tag status-${st}`} style={{ marginRight: 4 }}>
-                    {st} {s.byStatus[st]}
+                    {st} {b.byStatus[st]}
                   </span>
                 ))}
               </td>
-              <td className="hint">{s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : ''}</td>
+              <td>
+                {(b.byProduct || []).map((p) => (
+                  <span key={p.product} className="tag" style={{ marginRight: 4 }}>
+                    {p.product} {p.orders}
+                  </span>
+                ))}
+              </td>
+              <td className="hint">{b.updatedAt ? new Date(b.updatedAt).toLocaleTimeString() : ''}</td>
             </tr>
           ))}
-          {summaries.length === 0 && (
+          {buckets.length === 0 && (
             <tr>
-              <td colSpan={6} className="empty">
-                No summaries yet — insert some orders on the Orders page.
+              <td colSpan={8} className="empty">
+                No {period} buckets yet — generate orders on the Orders tab.
               </td>
             </tr>
           )}
@@ -180,6 +161,15 @@ export default function DashboardPanel({ events }) {
       </table>
     </div>
   )
+}
+
+function bucketLabel(b) {
+  if (!b) return '—'
+  if (b.bucketStart) return new Date(b.bucketStart).toISOString().slice(0, 10)
+  // _id is "<period>|<ISO>"; fall back to the date part after the pipe.
+  const s = String(b._id)
+  const pipe = s.indexOf('|')
+  return pipe >= 0 ? s.slice(pipe + 1, pipe + 11) : s
 }
 
 function Metric({ label, value }) {

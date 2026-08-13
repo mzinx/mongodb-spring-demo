@@ -4,18 +4,19 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 | Library | Demonstrated by |
 |---|---|
-| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded `order-summary` stream (mode `AUTO_RECOVER`) that precomputes the Dashboard summaries; live runtime status shown on the Dashboard |
-| [`mongodb-spring-sink`](../mongodb-spring-sink) | The generic `materializedViewListener` that runs the `order-summary` stream to maintain the `orderSummaries` view (also provides the event-driven `changeMirrorListener`) |
+| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded consolidation/routing/rollup streams (mode `AUTO_RECOVER`, `resumeStrategy=PER_BATCH`); live runtime status shown in the header |
+| [`mongodb-spring-sink`](../mongodb-spring-sink) | The event-driven `changeMirrorListener` (incremental per-event mirroring behind the `unify-*` merge streams) **and** the generic `materializedViewListener` (runs the `orders-by-day/week/month` `$dateTrunc` rollups, each `$merge`-ing into its own collection) |
 | [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
 | [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
-| [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener and the Orders `$facet` pagination |
+| [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener (e.g. the period-agnostic `orders-by-period` rollup) |
 
 > **Managing the streams:** this demo is a *business app* — it **runs** its own
-> streams (the `order-summary` materialized view, the message queue, discovery).
-> The seeded configs are `runOn=BUSINESS`. To create/edit/start/stop streams and
-> pipelines from a UI, run the companion [`mongostream`](../mongostream) console
-> against the **same database**: it manages the configs but does not execute the
-> business streams. See its README for the `runOn` role model.
+> streams (the consolidation/routing/rollup materialized views, the message
+> queue, discovery). The seeded configs are `runOn=BUSINESS`. To
+> create/edit/start/stop streams and pipelines from a UI, run the companion
+> [`mongostream`](../mongostream) console against the **same database**: it
+> manages the configs but does not execute the business streams. See its README
+> for the `runOn` role model.
 
 ## Architecture
 
@@ -25,10 +26,12 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 │  http://localhost:5173    │───────▶│  http://localhost:8080                    │
 │                           │        │                                           │
 │  Dashboard / Orders /     │ STOMP  │  REST API  ── ChangeStreamConfigService   │
-│  Messaging / Live events  │  /ws   │            ── ChangeStreamManager (status)│
+│  Messaging                │  /ws   │            ── ChangeStreamManager (status)│
 │                           │◀──────▶│  /ws STOMP ── message-queuing module      │
-└───────────────────────────┘        │  materializedViewListener ─▶ orderSummaries│
-                                     └──────────────────┬────────────────────────┘
+│                           │        │  changeMirrorListener ─▶ unifiedOrders     │
+│                           │        │  materializedViewListener ─▶ ordersByDay /  │
+│                           │        │              ordersByWeek / ordersByMonth  │
+└───────────────────────────┘        └──────────────────┬────────────────────────┘
                                                         │ change streams, heartbeats,
                                                         │ configs, resume tokens
                                                  ┌──────▼──────┐
@@ -37,11 +40,12 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 ```
 
 - **backend/** — Spring Boot 4 service consuming the libraries. It only adds thin
-  REST controllers on top of their public APIs. The `materializedViewListener`
-  (from `mongodb-spring-sink`) recomputes the daily order summary
-  collection (`orderSummaries`) by running the `orders-daily-summary` pipeline
-  template with `$merge`; a small `ViewRefreshBroadcaster` turns each recompute
-  event into a `/cmd` refresh broadcast for live clients.
+  REST controllers on top of their public APIs. The `changeMirrorListener` (from
+  `mongodb-spring-sink`) incrementally mirrors each channel write into
+  `unifiedOrders`; the `materializedViewListener` rolls `unifiedOrders` up into
+  three period collections (`ordersByDay` / `ordersByWeek` / `ordersByMonth`) via
+  `$merge`; a small `ViewRefreshBroadcaster` turns each recompute event into a `/cmd` refresh
+  broadcast for live clients.
 - **frontend/** — React SPA (Vite). In dev mode it proxies `/api` and `/ws` to the backend.
 
 ## Prerequisites
@@ -90,23 +94,27 @@ http://localhost:8080.
 
 ## Demo walkthrough
 
-1. **Dashboard** — daily order summary (orders, revenue, avg value, per-status
-   counts). It is *precomputed*: on first start a stream `order-summary` is seeded
-   (collection `orders`, mode `AUTO_RECOVER`, listener `materializedViewListener`,
-   `runOn=BUSINESS`, persisted in `_changeStreamConfigs`). That change stream triggers
-   `materializedViewListener`, which re-runs the `orders-daily-summary` pipeline template
-   (`$merge` into `orderSummaries`). Because the
-   stream runs in `AUTO_RECOVER` mode, exactly one instance (the leader) recomputes;
-   the header line shows live runtime status straight from `ChangeStreamManager`
-   (leader + running flag). `orderSummaries` is also in
-   `messaging.watch-collections`, so the dashboard refreshes live as summaries change.
-2. **Orders** — paginated view of the `orders` collection (paged through the
-   aggregation library's `$facet` pagination), with generator buttons to
-   insert/update/delete random documents. The message-queuing live-data service
-   watches `orders` and broadcasts a REFRESH command on `/cmd` for every change, so
-   the page updates in real time — try writing from `mongosh` while it's open.
+1. **Dashboard** — order summary bucketed by period (day / week / month; toggle
+   the granularity). It is *precomputed*: `unifiedOrders` is rolled up by the
+   `orders-by-day/week/month` streams (mode `AUTO_RECOVER`, listener
+   `materializedViewListener`, `runOn=BUSINESS`), each a `$dateTrunc` `$group` +
+   `$merge` into its **own** collection (`ordersByDay` / `ordersByWeek` /
+   `ordersByMonth`). Because the streams run in `AUTO_RECOVER` mode, exactly one
+   instance (the leader) recomputes; the header shows live runtime status from
+   `ChangeStreamManager`. All three collections are in `messaging.watch-collections`,
+   so the dashboard refreshes live as buckets change. See
+   [Consolidation scenarios](#consolidation-scenarios) for the pipeline design.
+2. **Orders** — the source channels and their consolidated view. A channel
+   dropdown selects **Unified (all sources)** — the read-only `unifiedOrders` merge
+   with a per-source count — or one of the three writable source channels
+   (`webOrders` / `posOrders` / `marketplaceOrders`), each with its own
+   differently-shaped documents and generator buttons. Every write is mirrored
+   incrementally into `unifiedOrders` by the per-source `unify-*` change streams, so
+   the page (and the Dashboard) update live over `/cmd` — try writing
+   from `mongosh` while it's open.
 3. **Live Events** — the raw WebSocket (STOMP) feed:
-   - `/sync`: changed documents from watched collections (`orders`, `orderSummaries`),
+   - `/sync`: changed documents from watched collections (`unifiedOrders`,
+     `ordersByDay`, `ordersByWeek`, `ordersByMonth`),
    - `/cmd`: REFRESH commands and messaging ACK/RES.
 4. **Messaging** — private messaging backed by **Spring Session (MongoDB)**. On load
    each browser is prompted for a display name, which is stored on its Spring Session
@@ -155,6 +163,63 @@ http://localhost:8080.
    stream elects a single leader (kill it and watch failover); an `AUTO_SCALE` stream
    partitions events across both instances.
 
+## Consolidation scenarios
+
+Two change-stream driven data-movement patterns, seeded on first start by
+`ConsolidationDemoSeeder` (idempotent) and surfaced across the UI: the **merge**
+on the *Orders* tab and the **period distribution** on the *Dashboard*. All
+streams are `runOn=BUSINESS`, `AUTO_RECOVER`, and use `resumeStrategy=PER_BATCH` —
+deliberately trading a small window of eventual consistency for **incremental,
+per-event performance** and **restart resilience** (a restart resumes from the
+last checkpoint rather than recomputing).
+
+### 1 · Merge / consolidate multiple sources → `unifiedOrders` (Orders tab)
+
+Three source collections model separate upstream systems, each with a
+**different field shape**:
+
+| unified   | `webOrders`        | `posOrders`          | `marketplaceOrders`   |
+|-----------|--------------------|----------------------|-----------------------|
+| customer  | `customer.name`    | `cashier`@`storeCode`| `buyerHandle`         |
+| product   | `items[0].sku`     | `lineItems[0].product`| `listing.sku`        |
+| quantity  | `items[0].qty`     | `lineItems[0].qty`   | `listing.units`       |
+| amount    | `totals.grand` USD | `total` (cents)      | `priceUsd`            |
+| status    | `state` (lower)    | `status` (UPPER)     | `fulfilment`          |
+| createdAt | `placedAt` (Date)  | `tsMillis` (epoch)   | `created` (ISO string)|
+
+Rather than periodically rescanning all three with a `$unionWith` recompute,
+each source has its **own change stream** using the event-driven
+`changeMirrorListener` (from `mongodb-spring-sink`). On each source write, the
+stream's **event pipeline** normalizes just the one changed document to the
+unified schema (`$set` on `fullDocument`) and the listener upserts it — **O(1)
+work per event**. The unified `_id` is `"<source>:<original _id>"` so channels
+never collide, and `documentKey._id` is rewritten so deletes hit the right
+unified doc (the event's top-level `_id`/resume token is never touched). Updates
+enable `fullDocument=UPDATE_LOOKUP` so the current document is available to
+normalize.
+
+Streams: `unify-web`, `unify-pos`, `unify-marketplace`.
+
+### 2 · Distribute by period into separate collections (daily / weekly / monthly) (Dashboard)
+
+A `$dateTrunc`-based rollup groups `unifiedOrders` into period buckets, each
+carrying a per-product breakdown (`byProduct`) and a per-status map (`byStatus`,
+e.g. `{PAID: 3, SHIPPED: 1}`). Because this is a genuine group aggregation, it
+uses the `materializedViewListener` (full recompute + `$merge`) — the deliberate
+contrast to the incremental mirrors above.
+
+The three granularities are **distributed across three distinct collections** —
+`ordersByDay`, `ordersByWeek`, `ordersByMonth`. **One period-agnostic template**
+(`orders-by-period`) is shared by all three streams: its body ends *before* the
+write stage, and each stream supplies (a) its `period` attribute — bound into
+`$dateTrunc` via `{"_ph": "period"}` — and (b) its own terminal `$merge`
+(the `writeStage` attribute) targeting its dedicated collection. The bucket `_id`
+is the truncated `bucketStart` date. The Dashboard switches between the three
+collections live.
+
+Streams: `orders-by-day` → `ordersByDay`, `orders-by-week` → `ordersByWeek`,
+`orders-by-month` → `ordersByMonth` (all share the `orders-by-period` template).
+
 ## REST API (backend)
 
 This app is a business app, not a stream-management console, so it exposes no
@@ -163,14 +228,15 @@ for that). It only reads what it needs to render the demo:
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/summary` | Daily order summaries (the materialized `orderSummaries` view) |
 | GET | `/api/instances` | Live instances (discovery heartbeats) |
 | GET | `/api/session/me` | Current browser's Spring Session id, private channel and display name |
 | POST | `/api/session/name` | Set the display name on the Spring Session |
 | GET | `/api/session/active` | Live roster of active (connected) sessions |
-| GET | `/api/data/orders?page=&size=` | Paginated orders (aggregation library `$facet` pagination) |
-| POST | `/api/data/orders/insert`, `/update-random`, `/delete-random` | Test data generator |
-| GET | `/api/summary` | Precomputed daily order summaries |
+| POST | `/api/channels/insert?channel=web\|pos\|marketplace&count=` | Generate orders into a source channel (Scenario 1) |
+| POST | `/api/channels/update-random`, `/delete-random?channel=` | Mutate a random channel order (drives update/delete events) |
+| GET | `/api/channels/list?channel=&limit=` | Recent raw docs from a channel (shows differing native shapes) — Orders tab |
+| GET | `/api/unified?source=&limit=` | Consolidated `unifiedOrders` view + per-source counts (Scenario 1) — Orders tab |
+| GET | `/api/periods?period=day\|week\|month&limit=` | Period summary from the matching collection (`ordersByDay`/`Week`/`Month`) (Scenario 2) — Dashboard |
 
 > Security note: the demo permits all requests and disables CSRF
 > (`SecurityConfig`) to keep it friction-free. Do not reuse as-is in production.
