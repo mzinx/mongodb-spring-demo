@@ -20,6 +20,8 @@ import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Sorts;
 import com.mongodb.client.model.Updates;
+import com.mzinx.mongodb.messaging.command.CommandMessages;
+import com.mzinx.mongodb.messaging.service.MessageService;
 
 /**
  * Scenario 1 — <b>Merge / consolidate multiple data sources</b>.
@@ -55,9 +57,25 @@ public class ChannelController {
     private static final List<String> CUSTOMERS = List.of("acme", "globex", "initech", "umbrella", "wayne", "stark");
 
     private final MongoTemplate mongoTemplate;
+    private final MessageService messageService;
+    private final CommandMessages commandMessages;
 
-    ChannelController(MongoTemplate mongoTemplate) {
+    ChannelController(MongoTemplate mongoTemplate, MessageService messageService, CommandMessages commandMessages) {
         this.mongoTemplate = mongoTemplate;
+        this.messageService = messageService;
+        this.commandMessages = commandMessages;
+    }
+
+    /**
+     * Broadcasts a {@code /cmd} REFRESH for a collection this request just wrote,
+     * so every connected client re-fetches the matching view immediately. Called
+     * at the end of each write endpoint. This refreshes the SOURCE collection the
+     * user wrote (e.g. {@code webOrders}); the derived views ({@code unifiedOrders}
+     * and the period summaries) update slightly later, via their own {@code /sync}
+     * live-data pushes as the change streams recompute them.
+     */
+    private void broadcastRefresh(String collection) {
+        this.messageService.broadcast(commandMessages.refresh(collection));
     }
 
     /** Inserts {@code count} random orders into the given channel (default web). */
@@ -69,6 +87,7 @@ public class ChannelController {
         for (int i = 0; i < Math.min(Math.max(count, 1), 100); i++)
             docs.add(randomFor(coll));
         mongoTemplate.getCollection(coll).insertMany(docs);
+        broadcastRefresh(coll);
         return Map.of("channel", channel, "collection", coll, "inserted", docs.size());
     }
 
@@ -88,6 +107,7 @@ public class ChannelController {
         };
         c.updateOne(Filters.eq("_id", victim.get("_id")),
                 Updates.set(statusField, randomStatusFor(coll)));
+        broadcastRefresh(coll);
         return Map.of("updated", 1, "channel", channel, "id", String.valueOf(victim.get("_id")));
     }
 
@@ -100,6 +120,7 @@ public class ChannelController {
         if (victim == null)
             return Map.of("deleted", 0);
         c.deleteOne(Filters.eq("_id", victim.get("_id")));
+        broadcastRefresh(coll);
         return Map.of("deleted", 1, "channel", channel, "id", String.valueOf(victim.get("_id")));
     }
 

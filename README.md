@@ -4,7 +4,7 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 | Library | Demonstrated by |
 |---|---|
-| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded consolidation/routing/rollup streams (mode `AUTO_RECOVER`, `resumeStrategy=PER_BATCH`); live runtime status shown in the header |
+| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded consolidation (`unify-*`) and period-rollup (`orders-by-*`) streams (mode `AUTO_RECOVER`, `resumeStrategy=PER_BATCH`); live runtime status shown in the header |
 | [`mongodb-spring-sink`](../mongodb-spring-sink) | The event-driven `changeMirrorListener` (incremental per-event mirroring behind the `unify-*` merge streams) **and** the generic `materializedViewListener` (runs the `orders-by-day/week/month` `$dateTrunc` rollups, each `$merge`-ing into its own collection) |
 | [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
 | [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
@@ -44,8 +44,17 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
   `mongodb-spring-sink`) incrementally mirrors each channel write into
   `unifiedOrders`; the `materializedViewListener` rolls `unifiedOrders` up into
   three period collections (`ordersByDay` / `ordersByWeek` / `ordersByMonth`) via
-  `$merge`; a small `ViewRefreshBroadcaster` turns each recompute event into a `/cmd` refresh
-  broadcast for live clients.
+  `$merge`.
+- **Live-update transport.** The **derived** collections — `unifiedOrders` and the
+  three period summaries (`ordersByDay/Week/Month`) — are in
+  `messaging.watch-collections`, so every recompute write pushes the changed
+  document over **`/sync`**; the matching frontend view refreshes off that. The
+  **source** channel collections (`webOrders/posOrders/marketplaceOrders`) are not
+  watched; instead each write endpoint (`ChannelController`) broadcasts a **`/cmd`
+  REFRESH** for the collection it just wrote, so the raw channel views update on
+  every client the moment anyone writes. (The refresh is issued by the endpoint
+  that made the write — not by the sink library, which stays free of any
+  messaging/refresh coupling.)
 - **frontend/** — React SPA (Vite). In dev mode it proxies `/api` and `/ws` to the backend.
 
 ## Prerequisites
@@ -101,21 +110,24 @@ http://localhost:8080.
    `$merge` into its **own** collection (`ordersByDay` / `ordersByWeek` /
    `ordersByMonth`). Because the streams run in `AUTO_RECOVER` mode, exactly one
    instance (the leader) recomputes; the header shows live runtime status from
-   `ChangeStreamManager`. All three collections are in `messaging.watch-collections`,
-   so the dashboard refreshes live as buckets change. See
+   `ChangeStreamManager`. All three period collections are in
+   `messaging.watch-collections`, so the dashboard refreshes live from their **`/sync`**
+   full-document pushes. See
    [Consolidation scenarios](#consolidation-scenarios) for the pipeline design.
 2. **Orders** — the source channels and their consolidated view. A channel
    dropdown selects **Unified (all sources)** — the read-only `unifiedOrders` merge
    with a per-source count — or one of the three writable source channels
    (`webOrders` / `posOrders` / `marketplaceOrders`), each with its own
    differently-shaped documents and generator buttons. Every write is mirrored
-   incrementally into `unifiedOrders` by the per-source `unify-*` change streams, so
-   the page (and the Dashboard) update live over `/cmd` — try writing
-   from `mongosh` while it's open.
+   incrementally into `unifiedOrders` by the per-source `unify-*` change streams.
+   The unified view refreshes off `unifiedOrders`' `/sync` push; a raw channel view
+   refreshes off the `/cmd` REFRESH its write endpoint broadcasts — try writing from
+   `mongosh` while it's open (the `/sync`-backed views update; the raw-channel view
+   only updates on writes made through the app, which issue the REFRESH).
 3. **Live Events** — the raw WebSocket (STOMP) feed:
-   - `/sync`: changed documents from watched collections (`unifiedOrders`,
-     `ordersByDay`, `ordersByWeek`, `ordersByMonth`),
-   - `/cmd`: REFRESH commands and messaging ACK/RES.
+   - `/sync`: changed documents from watched collections
+     (`unifiedOrders`, `ordersByDay`, `ordersByWeek`, `ordersByMonth`),
+   - `/cmd`: REFRESH commands (for the source channel a write touched) and messaging ACK/RES.
 4. **Messaging** — private messaging backed by **Spring Session (MongoDB)**. On load
    each browser is prompted for a display name, which is stored on its Spring Session
    (persisted in the `sessions` collection via `@EnableMongoHttpSession`, so identity
@@ -200,6 +212,9 @@ normalize.
 
 Streams: `unify-web`, `unify-pos`, `unify-marketplace`.
 
+`unifiedOrders` is in `messaging.watch-collections`, so the Orders page's unified
+view refreshes live off its `/sync` push as the mirror streams catch up.
+
 ### 2 · Distribute by period into separate collections (daily / weekly / monthly) (Dashboard)
 
 A `$dateTrunc`-based rollup groups `unifiedOrders` into period buckets, each
@@ -214,8 +229,9 @@ The three granularities are **distributed across three distinct collections** �
 write stage, and each stream supplies (a) its `period` attribute — bound into
 `$dateTrunc` via `{"_ph": "period"}` — and (b) its own terminal `$merge`
 (the `writeStage` attribute) targeting its dedicated collection. The bucket `_id`
-is the truncated `bucketStart` date. The Dashboard switches between the three
-collections live.
+is the truncated `bucketStart` date. All three collections are in
+`messaging.watch-collections`, so the Dashboard refreshes live from their `/sync`
+pushes; it switches between the three collections as you toggle the granularity.
 
 Streams: `orders-by-day` → `ordersByDay`, `orders-by-week` → `ordersByWeek`,
 `orders-by-month` → `ordersByMonth` (all share the `orders-by-period` template).

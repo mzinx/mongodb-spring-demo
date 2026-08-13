@@ -65,19 +65,6 @@ public class ConsolidationDemoSeeder implements ApplicationRunner {
     public static final String ORDERS_BY_WEEK = "ordersByWeek";
     public static final String ORDERS_BY_MONTH = "ordersByMonth";
 
-    /**
-     * Maps each period-rollup stream id to the collection it actually WRITES
-     * ({@code $merge} target). Needed because {@code MaterializedViewRecomputedEvent}
-     * only reports the aggregation <em>source</em> ({@code unifiedOrders}) — which
-     * is the same for all three streams — so a refresh hint keyed off the source
-     * would (a) fire 3× and (b) name the wrong collection. Keying off the output
-     * collection instead yields one correct refresh per changed view.
-     */
-    public static final Map<String, String> PERIOD_STREAM_OUTPUT = Map.of(
-            "orders-by-day", ORDERS_BY_DAY,
-            "orders-by-week", ORDERS_BY_WEEK,
-            "orders-by-month", ORDERS_BY_MONTH);
-
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
     private final ChangeStreamConfigService changeStreamConfigService;
