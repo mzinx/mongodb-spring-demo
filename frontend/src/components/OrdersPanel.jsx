@@ -65,9 +65,14 @@ export default function OrdersPanel({ events }) {
     load()
   }, [load])
 
-  // Every change flows into unifiedOrders, so refresh on that collection.
+  // Live-refresh off the collection backing the CURRENT view:
+  //  - unified view -> the derived `unifiedOrders` collection, kept live on /sync
+  //    (message-queuing watches it), so it updates as the mirror streams catch up.
+  //  - a raw channel view -> that channel's own collection (e.g. `webOrders`),
+  //    refreshed by the /cmd REFRESH the write endpoint broadcasts, so every
+  //    client's raw list updates immediately when anyone writes that channel.
   const onRefresh = useCallback(() => load(true), [load])
-  useLiveRefresh(events, 'unifiedOrders', onRefresh)
+  useLiveRefresh(events, selected.coll, onRefresh)
 
   const run = async (fn) => {
     setBusy(true)
