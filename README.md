@@ -10,6 +10,8 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 | [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
 | [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener (e.g. the period-agnostic `orders-by-period` rollup) |
 
+Demo site: https://demo.mzinx.com/
+
 > **Managing the streams:** this demo is a *business app* — it **runs** its own
 > streams (the consolidation/routing/rollup materialized views, the message
 > queue, discovery). The seeded configs are `runOn=BUSINESS`. To
@@ -17,6 +19,7 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 > [`mongostream`](../mongostream) console against the **same database**: it
 > manages the configs but does not execute the business streams. See its README
 > for the `runOn` role model.
+> MongoStream demo: https://mongostream.mzinx.com/
 
 ## Architecture
 
