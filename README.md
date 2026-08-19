@@ -4,11 +4,11 @@ Demo web application showcasing the `mongodb-spring-*` libraries:
 
 | Library | Demonstrated by |
 |---|---|
-| [`mongodb-spring-change-stream`](../mongodb-spring-change-stream) | The seeded consolidation (`unify-*`) and period-rollup (`orders-by-*`) streams (mode `AUTO_RECOVER`, `resumeStrategy=PER_BATCH`); live runtime status shown in the header |
-| [`mongodb-spring-sink`](../mongodb-spring-sink) | The event-driven `changeMirrorListener` (incremental per-event mirroring behind the `unify-*` merge streams) **and** the generic `materializedViewListener` (runs the `orders-by-day/week/month` `$dateTrunc` rollups, each `$merge`-ing into its own collection) |
-| [`mongodb-spring-discovery`](../mongodb-spring-discovery) | Instance registry shown in the header; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
-| [`mongodb-spring-message-queuing`](../mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
-| [`mongodb-spring-aggregation`](../mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener (e.g. the period-agnostic `orders-by-period` rollup) |
+| [`mongodb-spring-change-stream`](https://github.com/mzinx/mongodb-spring-change-stream) | The seeded consolidation (`unify-*`) and period-rollup (`orders-by-*`) streams (mode `AUTO_RECOVER`, `resumeStrategy=PER_BATCH`); live runtime status shown in the header |
+| [`mongodb-spring-sink`](https://github.com/mzinx/mongodb-spring-sink) | The event-driven `changeMirrorListener` (incremental per-event mirroring behind the `unify-*` merge streams) **and** the generic `materializedViewListener` (runs the `orders-by-day/week/month` `$dateTrunc` rollups, each `$merge`-ing into its own collection) |
+| [`mongodb-spring-discovery`](https://github.com/mzinx/mongodb-spring-discovery) | Instance registry; heartbeats enabling `AUTO_RECOVER` / `AUTO_SCALE` modes |
+| [`mongodb-spring-message-queuing`](https://github.com/mzinx/mongodb-spring-message-queuing) | WebSocket (STOMP) endpoint, live data sync (`/sync`) and live command (`/cmd`) MongoDB-backed message queue demo |
+| [`mongodb-spring-aggregation`](https://github.com/mzinx/mongodb-spring-aggregation) | Pipeline templates (`_pipelines`) with `{"_ph": "variable"}` placeholder substitution, run by the materialized-view listener (e.g. the period-agnostic `orders-by-period` rollup) |
 
 Demo site: https://demo.mzinx.com/
 
@@ -16,7 +16,7 @@ Demo site: https://demo.mzinx.com/
 > streams (the consolidation/routing/rollup materialized views, the message
 > queue, discovery). The seeded configs are `runOn=BUSINESS`. To
 > create/edit/start/stop streams and pipelines from a UI, run the companion
-> [`mongostream`](../mongostream) console against the **same database**: it
+> [`mongostream`](https://github.com/mongodb-ps/mongostream) console against the **same database**: it
 > manages the configs but does not execute the business streams. See its README
 > for the `runOn` role model.
 > MongoStream demo: https://mongostream.mzinx.com/
@@ -242,7 +242,7 @@ Streams: `orders-by-day` → `ordersByDay`, `orders-by-week` → `ordersByWeek`,
 ## REST API (backend)
 
 This app is a business app, not a stream-management console, so it exposes no
-stream/pipeline CRUD endpoints (use the [`mongostream`](../mongostream) console
+stream/pipeline CRUD endpoints (use the [`mongostream`](https://github.com/mongodb-ps/mongostream) console
 for that). It only reads what it needs to render the demo:
 
 | Method | Path | Description |
