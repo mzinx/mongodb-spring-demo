@@ -247,7 +247,6 @@ for that). It only reads what it needs to render the demo:
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/instances` | Live instances (discovery heartbeats) |
 | GET | `/api/session/me` | Current browser's Spring Session id, private channel and display name |
 | POST | `/api/session/name` | Set the display name on the Spring Session |
 | GET | `/api/session/active` | Live roster of active (connected) sessions |

@@ -36,10 +36,10 @@ spec:
         livenessProbe:
           initialDelaySeconds: 50
           httpGet:
-            path: /api/instances
+            path: /actuator/health/liveness
             port: 8080
         readinessProbe:
           initialDelaySeconds: 50
           httpGet:
-            path: /api/instances
+            path: /actuator/health/readiness
             port: 8080
