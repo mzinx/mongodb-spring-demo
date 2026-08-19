@@ -2,18 +2,24 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useLiveRefresh } from '../useLiveRefresh.js'
 
+// All granularities live in ONE `ordersByPeriod` collection (day/week/month
+// computed in a single $unionWith pass), so every period reads/refreshes off the
+// same collection and just filters by `period`.
+const PERIOD_COLLECTION = 'ordersByPeriod'
 const PERIODS = [
-  { key: 'day', label: 'Daily', collection: 'ordersByDay' },
-  { key: 'week', label: 'Weekly', collection: 'ordersByWeek' },
-  { key: 'month', label: 'Monthly', collection: 'ordersByMonth' },
+  { key: 'day', label: 'Daily' },
+  { key: 'week', label: 'Weekly' },
+  { key: 'month', label: 'Monthly' },
+]
+
+const ROLLUPS = [
+  { key: 'customer', label: 'By customer', collection: 'customerSummary', keyLabel: 'Customer' },
+  { key: 'product', label: 'By product', collection: 'productInventory', keyLabel: 'Product' },
 ]
 
 // Preferred display order for the per-status breakdown; any other statuses
 // present in the data are appended alphabetically after these.
-const STATUS_ORDER = [
-  'PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED',
-  'OPEN', 'REFUNDED', 'VOID', 'AWAITING', 'DISPATCHED', 'COMPLETED', 'RETURNED',
-]
+const STATUS_ORDER = ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED']
 
 /** Orders the keys of a byStatus map: known statuses first, then the rest. */
 function orderedStatuses(byStatus) {
@@ -24,16 +30,45 @@ function orderedStatuses(byStatus) {
 }
 
 /**
- * Order summary dashboard, bucketed by period.
- *
- * The data is NOT aggregated on page load: it is precomputed from `unifiedOrders`
- * by the `orders-by-day`, `orders-by-week` and `orders-by-month` materialized-view
- * change streams (each a `$dateTrunc` rollup + `$merge`) into three DISTINCT
- * collections — `ordersByDay`, `ordersByWeek`, `ordersByMonth`. This page reads
- * the collection for the selected granularity and live-refreshes on that
- * collection's changes (pushed via /cmd).
+ * Dashboard with two views, both precomputed via $merge (never aggregated on
+ * page load):
+ *  - "By period": `orders` bucketed by day/week/month into one `ordersByPeriod`
+ *    collection (a single `$unionWith` pass) by the `orders-by-period` stream.
+ *  - "Rollups": one `rollup-orders` change stream fans out (via the listener's
+ *    writeStages) to `customerSummary` and `productInventory`.
+ * Each view live-refreshes on its backing collection's /sync changes.
  */
 export default function DashboardPanel({ events }) {
+  const [view, setView] = useState('period')
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>Order summary</h2>
+          <p className="hint">
+            Two precomputed <strong>$merge</strong> outputs: <em>by period</em> (day/week/month in one{' '}
+            <code>ordersByPeriod</code> collection via a single <code>$unionWith</code> pass) and <em>rollups</em>{' '}
+            (<code>customerSummary</code> / <code>productInventory</code>, both from one <code>rollup-orders</code> stream).
+          </p>
+        </div>
+        <div className="row-actions toolbar">
+          <button className={view === 'period' ? 'primary' : ''} onClick={() => setView('period')}>
+            By period
+          </button>
+          <button className={view === 'rollups' ? 'primary' : ''} onClick={() => setView('rollups')}>
+            Rollups
+          </button>
+        </div>
+      </div>
+
+      {view === 'period' ? <PeriodView events={events} /> : <RollupsView events={events} />}
+    </div>
+  )
+}
+
+// --- By-period view -----------------------------------------------------------
+
+function PeriodView({ events }) {
   const [period, setPeriod] = useState('day')
   const [buckets, setBuckets] = useState([])
   const [error, setError] = useState(null)
@@ -57,11 +92,9 @@ export default function DashboardPanel({ events }) {
   }, [load])
 
   const onRefresh = useCallback(() => load(true), [load])
-  // Refresh when the collection for the *selected* period changes.
-  const activeCollection = PERIODS.find((p) => p.key === period)?.collection ?? 'ordersByDay'
-  useLiveRefresh(events, activeCollection, onRefresh)
+  // All periods share one collection; any change to it refreshes the current view.
+  useLiveRefresh(events, PERIOD_COLLECTION, onRefresh)
 
-  // Newest bucket first (the API already sorts by bucketStart desc).
   const latest = buckets[0]
   const totalOrders = buckets.reduce((a, b) => a + (b.orders ?? 0), 0)
   const totalRevenue = buckets.reduce((a, b) => a + (b.revenue ?? 0), 0)
@@ -69,31 +102,18 @@ export default function DashboardPanel({ events }) {
   const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? period
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <div>
-          <h2>Order summary by period</h2>
-          <p className="hint">
-            Precomputed from <code>unifiedOrders</code> (the merge of all three channels) by{' '}
-            <code>$dateTrunc</code> rollup streams into three collections —{' '}
-            <code>ordersByDay</code> / <code>ordersByWeek</code> / <code>ordersByMonth</code>. Generate orders on
-            the <strong>Orders</strong> tab and watch buckets update live over <code>/sync</code>.
-          </p>
-        </div>
-        <div className="row-actions">
-          <div className="row-actions toolbar">
-            {PERIODS.map((p) => (
-              <button key={p.key} className={period === p.key ? 'primary' : ''} onClick={() => setPeriod(p.key)}>
-                {p.label}
-              </button>
-            ))}
-          </div>
-          {refreshedAt && (
-            <span className="pill ok" title="Applied from a REFRESH on /cmd">
-              live {refreshedAt.toLocaleTimeString()}
-            </span>
-          )}
-        </div>
+    <>
+      <div className="row-actions toolbar">
+        {PERIODS.map((p) => (
+          <button key={p.key} className={period === p.key ? 'primary' : ''} onClick={() => setPeriod(p.key)}>
+            {p.label}
+          </button>
+        ))}
+        {refreshedAt && (
+          <span className="pill ok" title="Applied from a live /sync change">
+            live {refreshedAt.toLocaleTimeString()}
+          </span>
+        )}
       </div>
 
       {error && <p className="error">{error}</p>}
@@ -159,14 +179,106 @@ export default function DashboardPanel({ events }) {
           )}
         </tbody>
       </table>
-    </div>
+    </>
+  )
+}
+
+// --- Rollups view (workflow fan-out $merge) -----------------------------------
+
+function RollupsView({ events }) {
+  const [kind, setKind] = useState('customer')
+  const [rows, setRows] = useState([])
+  const [error, setError] = useState(null)
+  const [refreshedAt, setRefreshedAt] = useState(null)
+
+  const active = ROLLUPS.find((r) => r.key === kind) ?? ROLLUPS[0]
+
+  const load = useCallback(
+    (silent = false) =>
+      api
+        .get(`/api/workflow/rollups?kind=${kind}`)
+        .then((d) => {
+          setRows(d.content || [])
+          if (silent) setRefreshedAt(new Date())
+          setError(null)
+        })
+        .catch((e) => setError(e.message)),
+    [kind],
+  )
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const onRefresh = useCallback(() => load(true), [load])
+  useLiveRefresh(events, active.collection, onRefresh)
+
+  const maxRevenue = Math.max(...rows.map((r) => r.revenue ?? 0), 1)
+
+  return (
+    <>
+      <div className="row-actions toolbar">
+        {ROLLUPS.map((r) => (
+          <button key={r.key} className={kind === r.key ? 'primary' : ''} onClick={() => setKind(r.key)}>
+            {r.label}
+          </button>
+        ))}
+        {refreshedAt && (
+          <span className="pill ok" title="Applied from a live /sync change">
+            live {refreshedAt.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      <p className="hint">
+        Kept live by the single <code>rollup-orders</code> change stream, which fans out (via the listener&apos;s
+        <code>writeStages</code>) to both <code>customerSummary</code> and <code>productInventory</code>. Generate or
+        edit orders on the Orders tab and watch <code>{active.collection}</code> update.
+      </p>
+
+      {error && <p className="error">{error}</p>}
+
+      <table className="table">
+        <thead>
+          <tr>
+            <th>{active.keyLabel}</th>
+            <th>Orders</th>
+            <th>Units</th>
+            <th>Revenue</th>
+            <th>Updated at</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r._id}>
+              <td className="mono">{r._id}</td>
+              <td>{r.orders}</td>
+              <td>{r.units}</td>
+              <td>
+                <div className="bar-cell">
+                  <span className="bar" style={{ width: `${((r.revenue ?? 0) / maxRevenue) * 100}%` }} />
+                  <span>{fmt(r.revenue)}</span>
+                </div>
+              </td>
+              <td className="hint">{r.updatedAt ? new Date(r.updatedAt).toLocaleTimeString() : ''}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={5} className="empty">
+                No rollups yet — generate orders on the Orders tab.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </>
   )
 }
 
 function bucketLabel(b) {
   if (!b) return '—'
   if (b.bucketStart) return new Date(b.bucketStart).toISOString().slice(0, 10)
-  // _id is "<period>|<ISO>"; fall back to the date part after the pipe.
   const s = String(b._id)
   const pipe = s.indexOf('|')
   return pipe >= 0 ? s.slice(pipe + 1, pipe + 11) : s

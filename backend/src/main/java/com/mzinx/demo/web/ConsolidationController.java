@@ -19,16 +19,16 @@ import com.mongodb.client.model.Sorts;
 import com.mzinx.demo.config.ConsolidationDemoSeeder;
 
 /**
- * Read side for the consolidation demo scenarios.
+ * Read side for the demo.
  * <ul>
- * <li>{@code /api/unified} — the consolidated {@code unifiedOrders} view built
- * incrementally from the three channels (Scenario 1).</li>
- * <li>{@code /api/periods?period=day|week|month} — the period-bucketed summary,
- * distributed across the {@code ordersByDay} / {@code ordersByWeek} /
- * {@code ordersByMonth} collections (Scenario 2).</li>
+ * <li>{@code /api/unified} — the polymorphic {@code orders} collection (all
+ * sources in one place), with a per-source composition count.</li>
+ * <li>{@code /api/periods} — the daily period-bucketed summary from
+ * one {@code ordersByPeriod} collection filtered by {@code period}
+ * ({@code day}/{@code week}/{@code month}).</li>
  * </ul>
- * These are plain reads of precomputed collections — no aggregation on the read
- * path (except a small per-source count for the merge composition).
+ * The period endpoint is a plain read of a precomputed collection; the orders
+ * endpoint adds only a small per-source count for the composition display.
  */
 @RestController
 @RequestMapping("/api")
@@ -40,47 +40,47 @@ public class ConsolidationController {
         this.mongoTemplate = mongoTemplate;
     }
 
-    // --- Scenario 1: consolidated view ---
+    // --- polymorphic orders view (all sources, one collection) ---
 
     @GetMapping("/unified")
     public Map<String, Object> unified(@RequestParam(required = false) String source,
             @RequestParam(defaultValue = "50") int limit) {
-        var find = mongoTemplate.getCollection(ConsolidationDemoSeeder.UNIFIED_ORDERS).find();
+        var find = mongoTemplate.getCollection(ConsolidationDemoSeeder.ORDERS).find();
         if (source != null && !source.isBlank())
             find = find.filter(Filters.eq("source", source));
         List<Document> content = new ArrayList<>();
-        find.sort(Sorts.descending("createdAt")).limit(clamp(limit)).forEach(content::add);
-        // Count per source so the UI can show the merge composition.
+        find.sort(Sorts.descending("createdAt")).limit(clamp(limit))
+                .forEach(d -> {
+                    Documents.stringifyId(d);
+                    content.add(d);
+                });
+        // Count per source so the UI can show the polymorphic composition.
         List<Document> bySource = new ArrayList<>();
-        mongoTemplate.getCollection(ConsolidationDemoSeeder.UNIFIED_ORDERS).aggregate(List.of(
+        mongoTemplate.getCollection(ConsolidationDemoSeeder.ORDERS).aggregate(List.of(
                 Aggregates.group("$source", Accumulators.sum("count", 1)),
                 Aggregates.sort(Sorts.descending("count")))).forEach(bySource::add);
         return Map.of("content", content, "bySource", bySource,
-                "total", mongoTemplate.getCollection(ConsolidationDemoSeeder.UNIFIED_ORDERS).estimatedDocumentCount());
+                "total", mongoTemplate.getCollection(ConsolidationDemoSeeder.ORDERS).estimatedDocumentCount());
     }
 
-    // --- Scenario 2: period-bucketed view (distributed across 3 collections) ---
+    // --- period-bucketed view: one `ordersByPeriod` collection, filter by period ---
 
     @GetMapping("/periods")
     public Map<String, Object> periods(@RequestParam(defaultValue = "day") String period,
             @RequestParam(defaultValue = "60") int limit) {
-        String collection = collectionForPeriod(period);
+        String p = switch (period == null ? "" : period.toLowerCase()) {
+            case "week" -> "week";
+            case "month" -> "month";
+            default -> "day";
+        };
+        String collection = ConsolidationDemoSeeder.ORDERS_BY_PERIOD;
         List<Document> content = new ArrayList<>();
-        mongoTemplate.getCollection(collection).find()
+        mongoTemplate.getCollection(collection).find(Filters.eq("period", p))
                 .sort(Sorts.descending("bucketStart"))
                 .limit(clamp(limit))
                 .forEach(content::add);
-        return Map.of("period", period, "collection", collection, "content", content,
-                "total", mongoTemplate.getCollection(collection).estimatedDocumentCount());
-    }
-
-    /** Maps a period name to its dedicated summary collection. */
-    private static String collectionForPeriod(String period) {
-        return switch (period == null ? "" : period.toLowerCase()) {
-            case "week" -> ConsolidationDemoSeeder.ORDERS_BY_WEEK;
-            case "month" -> ConsolidationDemoSeeder.ORDERS_BY_MONTH;
-            default -> ConsolidationDemoSeeder.ORDERS_BY_DAY;
-        };
+        return Map.of("period", p, "collection", collection, "content", content,
+                "total", mongoTemplate.getCollection(collection).countDocuments(Filters.eq("period", p)));
     }
 
     private static int clamp(int limit) {
