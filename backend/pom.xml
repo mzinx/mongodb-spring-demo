@@ -32,6 +32,13 @@
 			<artifactId>spring-boot-starter-data-mongodb</artifactId>
 		</dependency>
 
+		<!-- Actuator: exposes /actuator/health with dedicated liveness and
+		     readiness probe groups, used by the Kubernetes deployment probes. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
 		<!-- Spring Session backed by MongoDB: each browser gets an HTTP session
 		     persisted in the `sessions` collection, shared across backend
 		     instances and used to build the live "active sessions" presence list
@@ -52,7 +59,7 @@
 		<dependency>
 			<groupId>com.mzinx</groupId>
 			<artifactId>mongodb-spring-message-queuing</artifactId>
-			<version>1.1.3</version>
+			<version>1.1.4</version>
 		</dependency>
 		<dependency>
 			<groupId>com.mzinx</groupId>

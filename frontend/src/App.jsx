@@ -18,8 +18,11 @@ let bootStarted = false
 export default function App() {
   const [tab, setTab] = useState('Dashboard')
   const [connected, setConnected] = useState(false)
+  // User-controlled intent to be offline. When true, the STOMP client is
+  // deactivated so it stops auto-reconnecting; the pill/toggle reflect a
+  // deliberate offline state rather than an involuntary drop.
+  const [offline, setOffline] = useState(false)
   const [events, setEvents] = useState([])
-  const [instances, setInstances] = useState([])
   // The current browser's Spring Session identity (persisted in MongoDB).
   const [me, setMe] = useState(null)
   // Live roster of active sessions, driven by /cmd PRESENCE broadcasts.
@@ -119,10 +122,18 @@ export default function App() {
             stompClient.subscribe(meRef.current.channel, (msg) => addEvent(meRef.current.channel, msg.body)),
           )
         }
-        // Re-fetch the roster now that we're connected: the connect-time PRESENCE
-        // broadcast races with our /cmd subscription above (we may subscribe just
-        // after the server broadcast), so pull the authoritative list to avoid
-        // missing ourselves or peers who connected in that window.
+        // Re-sync the authoritative roster now that we're (re)connected. This
+        // fires on every (re)connect, so it also heals the roster after a drop:
+        // any PRESENCE snapshot broadcast on /cmd while we were offline is lost
+        // (STOMP is fire-and-forget, no replay), which would otherwise leave us
+        // showing a stale list until the 15s poll. Fetching immediately pulls the
+        // authoritative snapshot right away instead of waiting for that poll.
+        //
+        // A second, short-delayed fetch additionally covers the connect-time
+        // PRESENCE race: the server's connect broadcast can be emitted just before
+        // our /cmd subscription above is registered, so the immediate fetch might
+        // still predate a peer's very-recent change; the follow-up reconciles it.
+        refreshRoster()
         setTimeout(refreshRoster, 300)
       }
       stompClient.onWebSocketClose = () => setConnected(false)
@@ -134,18 +145,6 @@ export default function App() {
     // immediate unmount/remount in dev would otherwise tear down the socket we
     // just started. The connection lives for the page lifetime.
   }, [addEvent, handleMessage])
-
-  // Poll the discovery instance registry.
-  useEffect(() => {
-    let alive = true
-    const load = () => api.get('/api/instances').then((data) => alive && setInstances(data)).catch(() => {})
-    load()
-    const timer = setInterval(load, 10000)
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [])
 
   // Poll the presence roster as a backstop to the /cmd PRESENCE broadcasts.
   // Broadcasts fire on connect/disconnect, but a session that was grace-expired
@@ -161,6 +160,44 @@ export default function App() {
     return () => {
       alive = false
       clearInterval(timer)
+    }
+  }, [])
+
+  // Tracks the user's offline intent for the toggle handler without reading it
+  // from a setState updater — updaters must stay pure (React 18 StrictMode runs
+  // them twice, which would fire the socket teardown/reopen twice and race the
+  // close). `transitioning` serialises transitions so a rapid toggle can't call
+  // activate() while a previous deactivate() is still tearing the socket down —
+  // that race is what surfaces the browser's "WebSocket is already in CLOSING or
+  // CLOSED state" warning (a pending heartbeat/frame gets flushed onto a socket
+  // that has already begun closing).
+  const offlineRef = useRef(false)
+  const transitioning = useRef(false)
+
+  // User toggle between online and offline. Going offline deactivates the STOMP
+  // client (which also stops its auto-reconnect loop); going back online
+  // re-activates it, re-runs onConnect and re-subscribes to all channels. The
+  // activate()/deactivate() side effects run here (not in a setState updater) and
+  // are serialised via `transitioning`.
+  const toggleConnection = useCallback(async () => {
+    if (transitioning.current) return
+    transitioning.current = true
+
+    const goingOffline = !offlineRef.current
+    offlineRef.current = goingOffline
+    setOffline(goingOffline)
+
+    try {
+      if (goingOffline) {
+        setConnected(false)
+        // deactivate() resolves once the socket has fully closed; awaiting it
+        // guarantees a subsequent "go online" can't reopen mid-close.
+        await stompClient.deactivate()
+      } else {
+        stompClient.activate()
+      }
+    } finally {
+      transitioning.current = false
     }
   }, [])
 
@@ -180,12 +217,22 @@ export default function App() {
               you: {me.displayName || 'anonymous'}
             </span>
           )}
-          <span className="pill" title="Instances registered via mongodb-spring-discovery heartbeats">
-            instances: {instances.length ? instances.join(', ') : '—'}
-          </span>
           <span className={`pill ${connected ? 'ok' : 'bad'}`}>
-            <span className="dot" /> {connected ? 'WebSocket connected' : 'WebSocket offline'}
+            <span className="dot" />{' '}
+            {connected
+              ? 'WebSocket connected'
+              : offline
+                ? 'WebSocket offline (by you)'
+                : 'WebSocket offline'}
           </span>
+          <button
+            type="button"
+            className={`pill pill-toggle ${offline ? 'bad' : 'ok'}`}
+            onClick={toggleConnection}
+            title={offline ? 'Reconnect the WebSocket' : 'Disconnect the WebSocket'}
+          >
+            {offline ? 'Go online' : 'Go offline'}
+          </button>
         </div>
       </header>
 

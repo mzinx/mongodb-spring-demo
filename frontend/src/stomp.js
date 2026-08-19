@@ -4,17 +4,30 @@ import { Client } from '@stomp/stompjs'
 // provided by the mongodb-spring-message-queuing module.
 // In dev, Vite proxies /ws to the Spring Boot backend.
 //
-// Heartbeats are set to match the server (mongodb-spring-message-queuing enables
-// STOMP heartbeats by default at 10s/10s, via messaging.heartbeat.*) so the
-// backend can detect a dead connection — e.g. an intermittent network drop
-// with no clean close — within ~one interval and fire SessionDisconnectEvent,
-// which drives prompt presence drop-off. These are also stompjs' defaults, but
-// pinned here to keep the two ends explicitly aligned.
+// Heartbeats are set to match the server (mongodb-spring-message-queuing, via
+// messaging.heartbeat.*) so the backend can detect a dead connection — e.g. an
+// intermittent network drop with no clean close — and fire SessionDisconnectEvent,
+// which drives presence drop-off. They MUST stay aligned with the two ends.
+//
+// The interval is deliberately relaxed to 25s (was 10s). A short heartbeat window
+// makes the connection fragile: any late beat — network jitter, a GC/main-thread
+// pause, or a background tab throttled by the browser — is read as a dead peer and
+// the socket is torn down, forcing a reconnect that drops any /sync and /cmd events
+// broadcast during the gap (STOMP delivery is fire-and-forget, no replay). A wider
+// window tolerates that jitter and cuts the false-positive disconnect rate; prompt
+// presence drop-off is still guaranteed within ~one interval for real drops.
 export const stompClient = new Client({
   brokerURL: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-  reconnectDelay: 3000,
-  heartbeatIncoming: 10000,
-  heartbeatOutgoing: 10000,
+  // Reconnect quickly after a genuine drop to minimise the window of missed events.
+  reconnectDelay: 2000,
+  heartbeatIncoming: 25000,
+  heartbeatOutgoing: 25000,
+  // On a heartbeat/comm failure, discard the underlying WebSocket immediately
+  // rather than attempting to reuse a socket that has already begun closing.
+  // Without this, stompjs' heartbeat timer can flush a frame onto a half-closed
+  // socket, which the browser reports as
+  // "WebSocket is already in CLOSING or CLOSED state."
+  discardWebsocketOnCommFailure: true,
 })
 
 /** Publishes a message to the message-queuing push endpoint. */
