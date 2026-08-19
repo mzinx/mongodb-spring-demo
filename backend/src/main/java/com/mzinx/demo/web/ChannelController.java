@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import org.bson.Document;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,42 +15,59 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.Accumulators;
 import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Sorts;
 import com.mongodb.client.model.Updates;
+import com.mzinx.demo.config.ConsolidationDemoSeeder;
 import com.mzinx.mongodb.messaging.command.CommandMessages;
 import com.mzinx.mongodb.messaging.service.MessageService;
 
 /**
- * Scenario 1 — <b>Merge / consolidate multiple data sources</b>.
+ * Order intake — writes into a <b>single, polymorphic {@code orders}
+ * collection</b>.
  * <p>
- * Generates orders into three distinct <em>channel</em> collections, each with a
- * deliberately <b>different field shape</b> (as would come from separate upstream
- * systems). These are the inputs consolidated <em>incrementally</em> into a single
- * {@code unifiedOrders} view by three per-channel change streams (each using the
- * event-driven {@code changeMirrorListener} + a normalizing event pipeline — see
- * {@link com.mzinx.demo.config.ConsolidationDemoSeeder}). Nothing here rescans a
- * whole collection: each source write is mirrored as one upsert.
+ * This deliberately follows MongoDB's
+ * <a href="https://mongodb.com/docs/manual/data-modeling/design-patterns/polymorphic-data/polymorphic-schema-pattern/">polymorphic
+ * pattern</a>: related-but-differently-shaped entities (orders originating from a
+ * web store, a POS terminal, or a marketplace) live in <em>one</em> collection,
+ * distinguished by a {@code source} discriminator, sharing a common core schema
+ * and keeping each source's original fields under a nested {@code sourceData}
+ * sub-document. Splitting the same base entity across three collections
+ * ({@code webOrders} / {@code posOrders} / {@code marketplaceOrders}) — the demo's
+ * previous shape — is a schema anti-pattern: cross-source reads need
+ * {@code $unionWith} or multiple queries, indexes must be duplicated, and adding
+ * a new source means a new collection.
+ * <p>
+ * <b>Core schema (shared by every {@code source}):</b>
  * <table border="1">
- * <caption>Per-channel field shapes (all mapped to the unified schema)</caption>
- * <tr><th>unified</th><th>webOrders</th><th>posOrders</th><th>marketplaceOrders</th></tr>
- * <tr><td>orderId</td><td>_id (ObjectId)</td><td>ticketNo</td><td>externalId</td></tr>
- * <tr><td>customer</td><td>customer.name</td><td>cashier + "@store"</td><td>buyerHandle</td></tr>
- * <tr><td>product</td><td>items[0].sku</td><td>lineItems[0].product</td><td>listing.sku</td></tr>
- * <tr><td>quantity</td><td>items[0].qty</td><td>lineItems[0].qty</td><td>listing.units</td></tr>
- * <tr><td>amount</td><td>totals.grand (USD)</td><td>total (cents)</td><td>priceUsd</td></tr>
- * <tr><td>status</td><td>state (lowercase)</td><td>status (UPPER)</td><td>fulfilment</td></tr>
- * <tr><td>createdAt</td><td>placedAt</td><td>tsMillis (epoch)</td><td>created (ISO string)</td></tr>
+ * <caption>orders document</caption>
+ * <tr><th>field</th><th>meaning</th></tr>
+ * <tr><td>_id</td><td>{@code "<source>:<n>"} — stable, source-prefixed</td></tr>
+ * <tr><td>source</td><td>{@code web} | {@code pos} | {@code marketplace} (discriminator)</td></tr>
+ * <tr><td>customer</td><td>customer/account label</td></tr>
+ * <tr><td>product</td><td>product sku</td></tr>
+ * <tr><td>quantity</td><td>units ordered</td></tr>
+ * <tr><td>amount</td><td>order value (USD, normalized)</td></tr>
+ * <tr><td>status</td><td>lifecycle status (UPPER)</td></tr>
+ * <tr><td>createdAt</td><td>order time (Date)</td></tr>
+ * <tr><td>sourceData</td><td>source-specific fields (the polymorphic part)</td></tr>
  * </table>
+ * The period-rollup dashboard (Scenario 2) reads this collection directly — there
+ * is no longer a separate {@code unifiedOrders} consolidation step, because the
+ * data is already unified at write time by the shared schema.
  */
 @RestController
 @RequestMapping("/api/channels")
 public class ChannelController {
 
-    public static final String WEB = "webOrders";
-    public static final String POS = "posOrders";
-    public static final String MARKETPLACE = "marketplaceOrders";
+    /** The single polymorphic collection every source writes into. */
+    public static final String ORDERS = ConsolidationDemoSeeder.ORDERS;
+
+    public static final String SOURCE_WEB = "web";
+    public static final String SOURCE_POS = "pos";
+    public static final String SOURCE_MARKETPLACE = "marketplace";
 
     private static final List<String> PRODUCTS = List.of("keyboard", "mouse", "monitor", "laptop", "webcam", "dock");
     private static final List<String> CUSTOMERS = List.of("acme", "globex", "initech", "umbrella", "wayne", "stark");
@@ -67,148 +83,167 @@ public class ChannelController {
     }
 
     /**
-     * Broadcasts a {@code /cmd} REFRESH for a collection this request just wrote,
-     * so every connected client re-fetches the matching view immediately. Called
-     * at the end of each write endpoint. This refreshes the SOURCE collection the
-     * user wrote (e.g. {@code webOrders}); the derived views ({@code unifiedOrders}
-     * and the period summaries) update slightly later, via their own {@code /sync}
-     * live-data pushes as the change streams recompute them.
+     * Broadcasts a {@code /cmd} REFRESH for the {@code orders} collection this
+     * request just wrote, so every connected client re-fetches the orders view
+     * immediately. The derived period summaries update slightly later, via their
+     * own {@code /sync} live-data pushes as the change streams recompute them.
      */
-    private void broadcastRefresh(String collection) {
-        this.messageService.broadcast(commandMessages.refresh(collection));
+    private void broadcastRefresh() {
+        this.messageService.broadcast(commandMessages.refresh(ORDERS));
     }
 
-    /** Inserts {@code count} random orders into the given channel (default web). */
+    /** Inserts {@code count} random orders for the given source (default web). */
     @PostMapping("/insert")
     public Map<String, Object> insert(@RequestParam(defaultValue = "web") String channel,
             @RequestParam(defaultValue = "1") int count) {
-        String coll = collectionFor(channel);
+        String source = sourceOf(channel);
         List<Document> docs = new ArrayList<>();
         for (int i = 0; i < Math.min(Math.max(count, 1), 100); i++)
-            docs.add(randomFor(coll));
-        mongoTemplate.getCollection(coll).insertMany(docs);
-        broadcastRefresh(coll);
-        return Map.of("channel", channel, "collection", coll, "inserted", docs.size());
+            docs.add(randomFor(source));
+        mongoTemplate.getCollection(ORDERS).insertMany(docs);
+        broadcastRefresh();
+        return Map.of("source", source, "collection", ORDERS, "inserted", docs.size());
     }
 
-    /** Updates one random order's status in the given channel (drives an update event). */
+    /** Updates one random order's status for the given source (drives an update event). */
     @PostMapping("/update-random")
     public Map<String, Object> updateRandom(@RequestParam(defaultValue = "web") String channel) {
-        String coll = collectionFor(channel);
-        MongoCollection<Document> c = mongoTemplate.getCollection(coll);
-        Document victim = c.aggregate(List.of(Aggregates.sample(1))).first();
+        String source = sourceOf(channel);
+        MongoCollection<Document> c = mongoTemplate.getCollection(ORDERS);
+        Document victim = c.aggregate(List.of(
+                Aggregates.match(Filters.eq("source", source)),
+                Aggregates.sample(1))).first();
         if (victim == null)
             return Map.of("updated", 0);
-        // Each channel names its status field differently — update the right one.
-        String statusField = switch (coll) {
-            case WEB -> "state";
-            case POS -> "status";
-            default -> "fulfilment";
-        };
         c.updateOne(Filters.eq("_id", victim.get("_id")),
-                Updates.set(statusField, randomStatusFor(coll)));
-        broadcastRefresh(coll);
-        return Map.of("updated", 1, "channel", channel, "id", String.valueOf(victim.get("_id")));
+                Updates.set("status", randomStatus()));
+        broadcastRefresh();
+        return Map.of("updated", 1, "source", source, "id", String.valueOf(victim.get("_id")));
     }
 
-    /** Deletes one random order from the given channel (drives a delete event). */
+    /** Deletes one random order for the given source (drives a delete event). */
     @PostMapping("/delete-random")
     public Map<String, Object> deleteRandom(@RequestParam(defaultValue = "web") String channel) {
-        String coll = collectionFor(channel);
-        MongoCollection<Document> c = mongoTemplate.getCollection(coll);
-        Document victim = c.aggregate(List.of(Aggregates.sample(1))).first();
+        String source = sourceOf(channel);
+        MongoCollection<Document> c = mongoTemplate.getCollection(ORDERS);
+        Document victim = c.aggregate(List.of(
+                Aggregates.match(Filters.eq("source", source)),
+                Aggregates.sample(1))).first();
         if (victim == null)
             return Map.of("deleted", 0);
         c.deleteOne(Filters.eq("_id", victim.get("_id")));
-        broadcastRefresh(coll);
-        return Map.of("deleted", 1, "channel", channel, "id", String.valueOf(victim.get("_id")));
+        broadcastRefresh();
+        return Map.of("deleted", 1, "source", source, "id", String.valueOf(victim.get("_id")));
     }
 
-    /** Recent raw documents from a channel (to show the differing shapes side by side). */
+    /**
+     * Recent orders for a source (or all sources when {@code channel=all}), read
+     * from the single {@code orders} collection. Shows both the shared core fields
+     * and the per-source {@code sourceData} sub-document.
+     */
     @GetMapping("/list")
-    public Map<String, Object> list(@RequestParam(defaultValue = "web") String channel,
-            @RequestParam(defaultValue = "10") int limit) {
-        String coll = collectionFor(channel);
+    public Map<String, Object> list(@RequestParam(defaultValue = "all") String channel,
+            @RequestParam(defaultValue = "25") int limit) {
+        var find = mongoTemplate.getCollection(ORDERS).find();
+        String source = null;
+        if (!"all".equalsIgnoreCase(channel == null ? "" : channel.trim())) {
+            source = sourceOf(channel);
+            find = find.filter(Filters.eq("source", source));
+        }
         List<Document> docs = new ArrayList<>();
-        mongoTemplate.getCollection(coll)
-                .find()
-                .sort(Sorts.descending("_id"))
-                .limit(Math.min(Math.max(limit, 1), 50))
+        find.sort(Sorts.descending("createdAt"))
+                .limit(Math.min(Math.max(limit, 1), 100))
                 .forEach(d -> {
                     Documents.stringifyId(d);
                     docs.add(d);
                 });
-        long total = mongoTemplate.getCollection(coll).estimatedDocumentCount();
-        return Map.of("channel", channel, "collection", coll, "content", docs, "total", total);
+        // Composition per source, so the UI can show the polymorphic breakdown.
+        List<Document> bySource = new ArrayList<>();
+        mongoTemplate.getCollection(ORDERS).aggregate(List.of(
+                Aggregates.group("$source", Accumulators.sum("count", 1)),
+                Aggregates.sort(Sorts.descending("count")))).forEach(bySource::add);
+        long total = mongoTemplate.getCollection(ORDERS).estimatedDocumentCount();
+        return Map.of("source", source == null ? "all" : source, "collection", ORDERS,
+                "content", docs, "bySource", bySource, "total", total);
     }
 
-    private static String collectionFor(String channel) {
+    /** Normalizes a channel/source alias to the canonical discriminator value. */
+    private static String sourceOf(String channel) {
         return switch (channel == null ? "" : channel.toLowerCase()) {
-            case "web", "weborders" -> WEB;
-            case "pos", "posorders" -> POS;
-            case "marketplace", "marketplaceorders", "market" -> MARKETPLACE;
+            case "web", "weborders" -> SOURCE_WEB;
+            case "pos", "posorders" -> SOURCE_POS;
+            case "marketplace", "marketplaceorders", "market" -> SOURCE_MARKETPLACE;
             default -> throw new IllegalArgumentException(
-                    "Unknown channel '" + channel + "' (use web|pos|marketplace)");
+                    "Unknown source '" + channel + "' (use web|pos|marketplace)");
         };
     }
 
-    private static Document randomFor(String coll) {
-        return switch (coll) {
-            case WEB -> randomWeb();
-            case POS -> randomPos();
+    private static Document randomFor(String source) {
+        return switch (source) {
+            case SOURCE_WEB -> randomWeb();
+            case SOURCE_POS -> randomPos();
             default -> randomMarketplace();
         };
     }
 
-    private static String randomStatusFor(String coll) {
-        return switch (coll) {
-            case WEB -> random(List.of("pending", "paid", "shipped", "delivered", "cancelled"));
-            case POS -> random(List.of("OPEN", "PAID", "REFUNDED", "VOID"));
-            default -> random(List.of("awaiting", "dispatched", "completed", "returned"));
-        };
+    private static String randomStatus() {
+        return random(List.of("PENDING", "PAID", "SHIPPED", "DELIVERED", "CANCELLED"));
     }
 
-    // --- web channel: nested customer/items/totals, ObjectId id, Date placedAt ---
+    /**
+     * A source-prefixed id keeps the three sources collision-free in the shared
+     * collection (e.g. {@code "web:531274"}), the same guarantee the old
+     * per-collection split gave for free.
+     */
+    private static String id(String source) {
+        return source + ":" + ThreadLocalRandom.current().nextInt(100000, 999999);
+    }
+
+    private static Document core(String source, String customer, String product, int qty,
+            double amount, String status, Object sourceData) {
+        return new Document("_id", id(source))
+                .append("source", source)
+                .append("customer", customer)
+                .append("product", product)
+                .append("quantity", qty)
+                .append("amount", round(amount))
+                .append("status", status)
+                .append("createdAt", new Date())
+                .append("sourceData", sourceData);
+    }
+
+    // --- web: browser checkout; sourceData keeps the tier + line items ---
     private static Document randomWeb() {
         String product = random(PRODUCTS);
         int qty = ThreadLocalRandom.current().nextInt(1, 6);
-        double grand = round(qty * ThreadLocalRandom.current().nextDouble(20, 120));
-        return new Document("_id", new ObjectId())
-                .append("customer", new Document("name", random(CUSTOMERS)).append("tier", random(List.of("gold", "silver", "bronze"))))
+        double amount = qty * ThreadLocalRandom.current().nextDouble(20, 120);
+        Document sourceData = new Document("tier", random(List.of("gold", "silver", "bronze")))
                 .append("items", List.of(new Document("sku", product).append("qty", qty)))
-                .append("totals", new Document("grand", grand).append("currency", "USD"))
-                .append("state", random(List.of("pending", "paid", "shipped", "delivered", "cancelled")))
-                .append("placedAt", new Date());
+                .append("currency", "USD");
+        return core(SOURCE_WEB, random(CUSTOMERS), product, qty, amount, "PENDING", sourceData);
     }
 
-    // --- pos channel: flat, string ticketNo id, amount in CENTS, epoch millis ---
+    // --- pos: in-store terminal; sourceData keeps the cashier/store/ticket ---
     private static Document randomPos() {
         String product = random(PRODUCTS);
         int qty = ThreadLocalRandom.current().nextInt(1, 6);
-        long cents = Math.round(qty * ThreadLocalRandom.current().nextDouble(20, 120) * 100);
-        return new Document("_id", "T-" + ThreadLocalRandom.current().nextInt(100000, 999999))
-                .append("ticketNo", "T-" + ThreadLocalRandom.current().nextInt(100000, 999999))
-                .append("cashier", random(List.of("emma", "liam", "noah", "olivia")))
+        double amount = qty * ThreadLocalRandom.current().nextDouble(20, 120);
+        Document sourceData = new Document("cashier", random(List.of("emma", "liam", "noah", "olivia")))
                 .append("storeCode", "S" + ThreadLocalRandom.current().nextInt(1, 9))
-                .append("lineItems", List.of(new Document("product", product).append("qty", qty)))
-                .append("total", cents)
-                .append("status", random(List.of("OPEN", "PAID", "REFUNDED", "VOID")))
-                .append("tsMillis", System.currentTimeMillis());
+                .append("ticketNo", "T-" + ThreadLocalRandom.current().nextInt(100000, 999999));
+        return core(SOURCE_POS, random(List.of("emma", "liam", "noah", "olivia")),
+                product, qty, amount, "PAID", sourceData);
     }
 
-    // --- marketplace channel: externalId, ISO-string date, nested listing ---
+    // --- marketplace: 3rd-party listing; sourceData keeps the external ids ---
     private static Document randomMarketplace() {
         String product = random(PRODUCTS);
-        int units = ThreadLocalRandom.current().nextInt(1, 6);
-        double priceUsd = round(units * ThreadLocalRandom.current().nextDouble(20, 120));
-        return new Document("_id", new ObjectId())
+        int qty = ThreadLocalRandom.current().nextInt(1, 6);
+        double amount = qty * ThreadLocalRandom.current().nextDouble(20, 120);
+        Document sourceData = new Document("marketplace", random(List.of("amazon", "ebay", "etsy")))
                 .append("externalId", "MP-" + ThreadLocalRandom.current().nextInt(100000, 999999))
-                .append("buyerHandle", random(CUSTOMERS) + "_" + ThreadLocalRandom.current().nextInt(10, 99))
-                .append("listing", new Document("sku", product).append("units", units))
-                .append("priceUsd", priceUsd)
-                .append("marketplace", random(List.of("amazon", "ebay", "etsy")))
-                .append("fulfilment", random(List.of("awaiting", "dispatched", "completed", "returned")))
-                .append("created", new Date().toInstant().toString());
+                .append("buyerHandle", random(CUSTOMERS) + "_" + ThreadLocalRandom.current().nextInt(10, 99));
+        return core(SOURCE_MARKETPLACE, random(CUSTOMERS), product, qty, amount, "PENDING", sourceData);
     }
 
     private static double round(double v) {

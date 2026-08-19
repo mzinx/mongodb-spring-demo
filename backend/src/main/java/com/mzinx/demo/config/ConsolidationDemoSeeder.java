@@ -23,47 +23,92 @@ import com.mzinx.mongodb.sink.listener.ChangeMirrorListener;
 import com.mzinx.mongodb.sink.listener.MaterializedViewListener;
 
 /**
- * Seeds the demo scenarios that showcase change-stream driven data movement
- * patterns, all idempotently (created only if absent). This is the demo's sole
- * data seeder — every order flows through the three source channels into
- * {@code unifiedOrders} and onward.
+ * Seeds the demo's change-stream driven data-movement scenario, idempotently.
  *
- * <h2>Scenario 1 — Merge / consolidate multiple sources (incremental)</h2>
- * Three source collections ({@code webOrders}, {@code posOrders},
- * {@code marketplaceOrders}) with <b>different field shapes</b> are consolidated
- * into a single {@code unifiedOrders} view. Rather than periodically rescanning
- * all three with a {@code $unionWith} recompute, each source has its own change
- * stream using the event-driven {@link ChangeMirrorListener}: on each source
- * write, the stream's <b>event pipeline</b> normalizes just that one changed
- * document (via {@code $set} into {@code fullDocument}) to the unified schema and
- * the listener upserts it — <b>O(1) work per event</b>. Deletes rewrite
- * {@code documentKey._id} to the prefixed unified id so the right unified doc is
- * removed. Each stream uses {@link ResumeStrategy#PER_BATCH} so a restart resumes
- * from its last checkpoint (trading a small window of eventual consistency for
- * performance and resilience — exactly the intended design).
+ * <h2>Schema — one polymorphic {@code orders} collection</h2>
+ * Orders from every source (web / pos / marketplace) live in a <b>single</b>
+ * {@code orders} collection, distinguished by a {@code source} discriminator and
+ * sharing a common core schema ({@code customer, product, quantity, amount,
+ * status, createdAt}) with source-specific fields under {@code sourceData} — the
+ * MongoDB <a href="https://mongodb.com/docs/manual/data-modeling/design-patterns/polymorphic-data/polymorphic-schema-pattern/">polymorphic
+ * pattern</a>. Because the data is unified <em>at write time</em> by the shared
+ * schema, there is no separate {@code unifiedOrders} consolidation step (the demo
+ * previously split the same base entity across three collections and mirrored
+ * them together — a schema anti-pattern this redesign removes).
  *
- * <h2>Scenario 2 — Distribute by period into separate collections</h2>
- * A {@code $dateTrunc}-based rollup groups {@code unifiedOrders} into period
- * buckets, distributed across <b>three distinct collections</b> —
- * {@code ordersByDay}, {@code ordersByWeek}, {@code ordersByMonth}. This is a
- * genuine group aggregation, so it uses the {@link MaterializedViewListener}
- * (full recompute + {@code $merge}) — the deliberate contrast to the incremental
- * mirrors above. One period-agnostic pipeline template is shared by all three
- * streams: each binds the {@code $dateTrunc} unit from its own {@code period}
- * attribute and appends its own terminal {@code $merge} (via {@code writeStage})
- * into its dedicated collection.
+ * <h2>Change streams seeded here</h2>
+ * <ul>
+ * <li><b>Slice enrichments</b> — {@code enrich-payment} / {@code enrich-shipping} /
+ * {@code enrich-fulfillment}: each watches an enrichment ledger collection
+ * ({@code paymentLog} / {@code shippingAck} / {@code fulfillmentLog}) and merges
+ * that one slice into the matching order (O(1) per event, {@code whenMatched:
+ * "merge"}).</li>
+ * <li><b>Audit mirror</b> — {@code mirror-audit}: the {@link ChangeMirrorListener}
+ * showcase. Mirrors every {@code orders} change 1:1 into {@code ordersAudit} (whole
+ * document, O(1) per event, no aggregation), with {@code mirrorDelete=false} so
+ * deletes are retained as history.</li>
+ * <li><b>Fan-out rollups</b> — a single {@code rollup-orders} stream that watches
+ * {@code orders} and uses the listener's multi-target {@code writeStages} to
+ * {@code $merge} a per-customer rollup into {@code customerSummary} AND a
+ * per-product rollup into {@code productInventory}. Each recompute is <em>scoped</em>
+ * to the changed order's customer/product (not a full re-group), so it runs
+ * immediately without coalescing.</li>
+ * <li><b>Period distribution</b> — a single {@code orders-by-period} stream that
+ * computes day + week + month in one {@code $unionWith} pass and {@code $merge}s
+ * them all into one {@code ordersByPeriod} collection (composite {@code _id}
+ * {@code "<period>|<bucketStart>"} + a {@code period} discriminator). This is a
+ * full recompute, so it uses coalescing to fold bursts into one run.</li>
+ * </ul>
+ * The slice enrichments, rollups and period distribution use the
+ * {@link MaterializedViewListener}, whose terminal {@code $merge} can do a partial
+ * ({@code whenMatched: "merge"}) or full ({@code whenMatched: "replace"}) write, and
+ * whose {@code writeStages} attribute lets one stream fan out to several targets;
+ * the audit mirror uses the {@link ChangeMirrorListener} for a cheap whole-document
+ * copy. The workflow tasks that feed the ledgers live in
+ * {@code com.mzinx.demo.workflow.WorkflowService}.
  */
 @Component
 public class ConsolidationDemoSeeder implements ApplicationRunner {
 
-    public static final String WEB_ORDERS = "webOrders";
-    public static final String POS_ORDERS = "posOrders";
-    public static final String MARKETPLACE_ORDERS = "marketplaceOrders";
-    public static final String UNIFIED_ORDERS = "unifiedOrders";
-    /** Per-granularity summary collections (Scenario 2 — distribute by period). */
-    public static final String ORDERS_BY_DAY = "ordersByDay";
-    public static final String ORDERS_BY_WEEK = "ordersByWeek";
-    public static final String ORDERS_BY_MONTH = "ordersByMonth";
+    /** The single, polymorphic order collection every source writes into. */
+    public static final String ORDERS = "orders";
+
+    /**
+     * Single period-summary collection holding <b>all</b> granularities. Each doc's
+     * {@code _id} is {@code "<period>|<bucketStart ISO>"} and it carries a
+     * {@code period} discriminator ({@code day}/{@code week}/{@code month}). One
+     * change stream computes all three in a single {@code $unionWith} pass.
+     */
+    public static final String ORDERS_BY_PERIOD = "ordersByPeriod";
+
+    /** Fan-out rollup collections, kept live by the rollup change streams. */
+    public static final String CUSTOMER_SUMMARY = "customerSummary";
+    public static final String PRODUCT_INVENTORY = "productInventory";
+
+    /**
+     * Enrichment ledger collections (one doc per order, {@code _id = orderId}). The
+     * matching workflow task writes here instead of enriching {@code orders}
+     * directly; a per-slice {@code enrich-*} change stream then merges that slice
+     * into the order.
+     */
+    public static final String PAYMENT_LOG = "paymentLog";
+    public static final String SHIPPING_ACK = "shippingAck";
+    public static final String FULFILLMENT_LOG = "fulfillmentLog";
+
+    /**
+     * Whole-document audit/history mirror of {@code orders}, maintained by the
+     * event-driven {@code changeMirrorListener} ({@code mirror-audit} stream).
+     * Deletes are retained (not mirrored), so it doubles as a soft-delete trail.
+     */
+    public static final String ORDERS_AUDIT = "ordersAudit";
+
+    /**
+     * Order sub-document fields written by the enrichment workflow (via the payment
+     * mirror + the direct inventory/shipping/risk merges). The period-rollup streams
+     * must NOT recompute when only these change, so they filter them out of their
+     * change-stream pipeline.
+     */
+    static final List<String> ENRICHMENT_FIELDS = List.of("payment", "fulfillment", "shipping", "risk");
 
     private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -78,170 +123,74 @@ public class ConsolidationDemoSeeder implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        seedConsolidationStreams();
+        seedSliceEnrichments();
+        seedAuditMirror();
+        seedRollups();
         seedPeriodBucketing();
     }
 
     // ---------------------------------------------------------------------
-    // Scenario 1: incremental consolidation of three differently-shaped sources
+    // Slice enrichments: <ledger collection> change -> $merge one slice into order
     // ---------------------------------------------------------------------
 
-    private void seedConsolidationStreams() {
-        seedMirrorStream("unify-web", WEB_ORDERS, webNormalizePipeline());
-        seedMirrorStream("unify-pos", POS_ORDERS, posNormalizePipeline());
-        seedMirrorStream("unify-marketplace", MARKETPLACE_ORDERS, marketplaceNormalizePipeline());
+    /**
+     * Seeds one {@code enrich-*} change stream per enrichment slice. Each workflow
+     * task writes a ledger document keyed by the order {@code _id} into its own
+     * collection; the matching stream watches that collection and, for the single
+     * changed document, merges just that slice into the order — a scoped per-event
+     * enrichment, NOT a full recompute.
+     * <ul>
+     * <li>{@code paymentLog}      → {@code payment.*}</li>
+     * <li>{@code shippingAck}     → {@code shipping.*}</li>
+     * <li>{@code fulfillmentLog}  → {@code fulfillment.*}</li>
+     * </ul>
+     * Each uses the {@link MaterializedViewListener} — whose terminal {@code $merge}
+     * supports {@code whenMatched: "merge"} (a partial update that preserves the
+     * order's other fields) — aggregating over the ledger collection but scoped to
+     * just the event's {@code _id} via {@code {"_ph": "event.documentKey._id"}}, so
+     * the work is O(1) per write. (The library's {@code changeMirrorListener} does a
+     * full {@code replaceOne} and would wipe the order's other fields, so it is
+     * deliberately not used here — for a genuine whole-document mirror see
+     * {@link #seedAuditMirror()}.)
+     */
+    private void seedSliceEnrichments() {
+        seedSliceEnrichment("enrich-payment", PAYMENT_LOG, "payment");
+        seedSliceEnrichment("enrich-shipping", SHIPPING_ACK, "shipping");
+        seedSliceEnrichment("enrich-fulfillment", FULFILLMENT_LOG, "fulfillment");
     }
 
     /**
-     * Seeds one per-source change stream that normalizes each event's document to
-     * the unified schema and mirrors it into {@code unifiedOrders}. The event
-     * pipeline reshapes {@code fullDocument} (used by INSERT/REPLACE/UPDATE) and
-     * {@code documentKey._id} (used by DELETE).
+     * Seeds a single slice enrichment: watch {@code logCollection}, and for the
+     * changed record merge {@code {_id, <slice>: <the record, minus _id/orderId>}}
+     * into {@code orders} with {@code whenMatched: "merge"}.
      */
-    private void seedMirrorStream(String streamId, String sourceCollection, List<Document> eventPipeline) {
-        if (changeStreamConfigService.findById(streamId) != null)
-            return;
-        logger.info("Seeding consolidation change stream '{}' ({} -> {})", streamId, sourceCollection, UNIFIED_ORDERS);
-        Map<String, Object> attributes = new HashMap<>();
-        attributes.put(ChangeMirrorListener.ATTR_DESTINATION, UNIFIED_ORDERS);
-        changeStreamConfigService.save(ChangeStreamConfig.builder()
-                .id(streamId)
-                .collectionName(sourceCollection)
-                .runOn(ChangeStreamConfig.RunOn.BUSINESS)
-                // one leader mirrors; automatic failover
-                .mode(Mode.AUTO_RECOVER)
-                // resilience: resume from last checkpoint after a restart
-                .resumeStrategy(ResumeStrategy.PER_BATCH)
-                // updates must carry the current document so it can be normalized
-                .fullDocument(FullDocument.UPDATE_LOOKUP)
-                .pipeline(eventPipeline)
-                .listener(ChangeMirrorListener.BEAN_NAME)
-                .attributes(attributes)
-                .enabled(true)
-                .build());
-    }
-
-    /**
-     * Common tail applied to every normalize pipeline: stamp the unified source +
-     * a stable, channel-prefixed {@code _id} onto both {@code fullDocument} (for
-     * upserts) and {@code documentKey._id} (for deletes), so channels never
-     * collide in {@code unifiedOrders} and deletes hit the right document.
-     */
-    private static List<Document> withUnifiedKey(String source, List<Document> setFields) {
-        // Build the unified fields (evaluated against the ORIGINAL fullDocument).
-        Document unified = new Document();
-        for (Document s : setFields)
-            unified.putAll(s);
-        unified.put("source", source);
-        // Prefixed unified id = "<source>:<original _id as string>" so the three
-        // channels never collide in unifiedOrders.
-        Object prefixedId = new Document("$concat",
-                List.of(source + ":", new Document("$toString", "$documentKey._id")));
-        unified.put("_id", prefixedId);
-
-        List<Document> stages = new ArrayList<>();
-        // Replace fullDocument wholesale with ONLY the unified fields, but guard on
-        // its presence: delete events carry no fullDocument, and $mergeObjects/an
-        // object literal referencing missing paths would inject nulls. When absent
-        // we leave it null — the mirror listener uses documentKey._id for deletes.
-        stages.add(new Document("$set", new Document("fullDocument",
-                new Document("$cond", new Document()
-                        .append("if", new Document("$ifNull", List.of("$fullDocument", false)))
-                        .append("then", unified)
-                        .append("else", "$fullDocument")))));
-        // Rewrite documentKey._id to the same prefixed id (drives deletes).
-        stages.add(new Document("$set", new Document("documentKey._id", prefixedId)));
-        return stages;
-    }
-
-    /** webOrders: nested customer/items/totals, USD amount, Date placedAt. */
-    private static List<Document> webNormalizePipeline() {
-        return withUnifiedKey(WEB_ORDERS, List.of(
-                new Document("customer", "$fullDocument.customer.name"),
-                new Document("product", new Document("$arrayElemAt", List.of("$fullDocument.items.sku", 0))),
-                new Document("quantity", new Document("$arrayElemAt", List.of("$fullDocument.items.qty", 0))),
-                new Document("amount", "$fullDocument.totals.grand"),
-                new Document("status", new Document("$toUpper", "$fullDocument.state")),
-                new Document("createdAt", "$fullDocument.placedAt")));
-    }
-
-    /** posOrders: flat, amount in CENTS, epoch-millis tsMillis. */
-    private static List<Document> posNormalizePipeline() {
-        return withUnifiedKey(POS_ORDERS, List.of(
-                new Document("customer", new Document("$concat", List.of("$fullDocument.cashier", "@", "$fullDocument.storeCode"))),
-                new Document("product", new Document("$arrayElemAt", List.of("$fullDocument.lineItems.product", 0))),
-                new Document("quantity", new Document("$arrayElemAt", List.of("$fullDocument.lineItems.qty", 0))),
-                // cents -> dollars
-                new Document("amount", new Document("$round", List.of(
-                        new Document("$divide", List.of("$fullDocument.total", 100.0)), 2))),
-                new Document("status", "$fullDocument.status"),
-                // epoch millis -> Date
-                new Document("createdAt", new Document("$toDate", "$fullDocument.tsMillis"))));
-    }
-
-    /** marketplaceOrders: externalId, nested listing, ISO-string created. */
-    private static List<Document> marketplaceNormalizePipeline() {
-        return withUnifiedKey(MARKETPLACE_ORDERS, List.of(
-                new Document("customer", "$fullDocument.buyerHandle"),
-                new Document("product", "$fullDocument.listing.sku"),
-                new Document("quantity", "$fullDocument.listing.units"),
-                new Document("amount", "$fullDocument.priceUsd"),
-                new Document("status", new Document("$toUpper", "$fullDocument.fulfilment")),
-                // ISO string -> Date
-                new Document("createdAt", new Document("$toDate", "$fullDocument.created"))));
-    }
-
-    // ---------------------------------------------------------------------
-    // Scenario 2: distribute unifiedOrders by period into SEPARATE collections
-    // (daily/weekly/monthly) via $dateTrunc rollup
-    // ---------------------------------------------------------------------
-
-    private void seedPeriodBucketing() {
-        // One period-agnostic pipeline template shared by every granularity. Its
-        // body ends BEFORE the terminal write stage; each stream supplies its own
-        // $merge target (writeStage) so the three granularities land in three
-        // distinct collections. The $dateTrunc unit is bound from each stream's
-        // own "period" attribute.
-        if (pipelineRepository.findById("orders-by-period").isEmpty()) {
-            logger.info("Seeding pipeline template 'orders-by-period'");
+    private void seedSliceEnrichment(String streamId, String logCollection, String slice) {
+        if (pipelineRepository.findById(streamId).isEmpty()) {
+            logger.info("Seeding pipeline template '{}'", streamId);
             pipelineRepository.save(PipelineTemplate.builder()
-                    .name("orders-by-period")
-                    .stages(periodBucketStages())
+                    .name(streamId)
+                    .stages(sliceEnrichmentStages(slice))
                     .build());
         }
-        // Seed one stream per granularity — each writes to its own collection.
-        seedPeriodStream("orders-by-day", "day", ORDERS_BY_DAY);
-        seedPeriodStream("orders-by-week", "week", ORDERS_BY_WEEK);
-        seedPeriodStream("orders-by-month", "month", ORDERS_BY_MONTH);
-    }
-
-    /**
-     * Seeds one period-bucketing change stream for the given granularity. All
-     * three ({@code day}/{@code week}/{@code month}) share the
-     * {@code orders-by-period} template body; each carries its own {@code period}
-     * attribute (bound into {@code $dateTrunc}) and its own {@code writeStage}
-     * attribute — a terminal {@code $merge} into its dedicated collection
-     * ({@code ordersByDay} / {@code ordersByWeek} / {@code ordersByMonth}).
-     */
-    private void seedPeriodStream(String streamId, String period, String targetCollection) {
         if (changeStreamConfigService.findById(streamId) != null)
             return;
-        logger.info("Seeding period-bucketing change stream '{}' (period={}, {} -> {})",
-                streamId, period, UNIFIED_ORDERS, targetCollection);
+        logger.info("Seeding slice-enrichment change stream '{}' ({} -> {}.{})", streamId, logCollection, ORDERS, slice);
         Map<String, Object> attributes = new HashMap<>();
-        attributes.put(MaterializedViewListener.ATTR_OUTPUT_PIPELINE, "orders-by-period");
-        attributes.put("period", period);
-        // Each stream's own terminal write stage: $merge into its collection,
-        // replacing each bucket by _id. Appended to the shared template body by the
-        // MaterializedViewListener at runtime.
-        attributes.put(MaterializedViewListener.ATTR_WRITE_STAGE, new Document("$merge", new Document()
-                .append("into", targetCollection)
-                .append("on", "_id")
-                .append("whenMatched", "replace")
-                .append("whenNotMatched", "insert")));
+        attributes.put(MaterializedViewListener.ATTR_OUTPUT_PIPELINE, streamId);
+        // Aggregate over the ledger collection (not the whole orders collection). The
+        // pipeline itself narrows to the single changed doc via event.documentKey._id.
+        attributes.put(MaterializedViewListener.ATTR_AGGREGATION_COLLECTION, logCollection);
+        // Merge ONLY this slice into the matching order, keeping every other field
+        // intact. A single target is a one-element writeStages list.
+        attributes.put(MaterializedViewListener.ATTR_WRITE_STAGES, List.of(Map.of(
+                "writeStage", new Document("$merge", new Document()
+                        .append("into", ORDERS)
+                        .append("on", "_id")
+                        .append("whenMatched", "merge")
+                        .append("whenNotMatched", "discard")))));
         changeStreamConfigService.save(ChangeStreamConfig.builder()
                 .id(streamId)
-                .collectionName(UNIFIED_ORDERS)
+                .collectionName(logCollection)
                 .runOn(ChangeStreamConfig.RunOn.BUSINESS)
                 .mode(Mode.AUTO_RECOVER)
                 .resumeStrategy(ResumeStrategy.PER_BATCH)
@@ -253,24 +202,331 @@ public class ConsolidationDemoSeeder implements ApplicationRunner {
     }
 
     /**
-     * Rollup of {@code unifiedOrders} into period buckets. The {@code $dateTrunc}
-     * unit is bound from the stream's {@code period} attribute
-     * ({@code {"_ph": "period"}}), so the same template body produces daily, weekly
-     * or monthly buckets depending on which stream runs it. Groups at the
-     * (bucketStart, product, status) grain, then rolls up per bucket to produce
-     * both a per-product array ({@code byProduct}) and a per-status map
-     * ({@code byStatus}, e.g. {@code {PAID: 3, SHIPPED: 1}}), keyed by the
-     * truncated {@code bucketStart} date. The body ends WITHOUT a write stage —
-     * each stream appends its own {@code $merge} into its dedicated collection
-     * ({@code ordersByDay} / {@code ordersByWeek} / {@code ordersByMonth}).
+     * Shapes the changed ledger doc into an order patch:
+     * {@code {_id: <orderId>, <slice>: <ledger fields except _id/orderId>}}, then the
+     * appended {@code $merge} writes it into {@code orders} with
+     * {@code whenMatched: "merge"}. Scoped to the single event via
+     * {@code {"_ph": "event.documentKey._id"}} so it never rescans the ledger. The
+     * slice content is whatever the workflow task wrote (its bookkeeping {@code _id}
+     * and {@code orderId} are stripped).
+     */
+    private static List<Map<String, Object>> sliceEnrichmentStages(String slice) {
+        Document sliceValue = new Document("$unsetField", new Document()
+                .append("field", "orderId")
+                .append("input", new Document("$unsetField", new Document()
+                        .append("field", "_id")
+                        .append("input", "$$ROOT"))));
+        return List.of(
+                // only the ledger record that just changed
+                new Document("$match", new Document("_id", new Document("_ph", "event.documentKey._id"))),
+                // reshape into an order patch: keep _id (= orderId), nest the slice
+                new Document("$replaceWith", new Document()
+                        .append("_id", "$_id")
+                        .append(slice, sliceValue)));
+        // NOTE: terminal $merge into `orders` (whenMatched:merge) is appended by the
+        // stream's single writeStages target.
+    }
+
+    // ---------------------------------------------------------------------
+    // Audit mirror: orders change -> whole-document copy into ordersAudit
+    // (the changeMirrorListener showcase — O(1) per event, no aggregation)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Seeds the {@code mirror-audit} change stream — the demo's use of the
+     * event-driven {@link ChangeMirrorListener}. It mirrors <b>every</b>
+     * {@code orders} change 1:1 into {@code ordersAudit}: on insert/update/replace it
+     * upserts the whole current document by {@code _id} (O(1) per event, <em>no</em>
+     * aggregation over the source), which is exactly what this listener is for.
+     * <p>
+     * {@code mirrorDelete=false} means deletes are <b>not</b> propagated, so a
+     * deleted order is <b>retained</b> in {@code ordersAudit} — turning it into a
+     * simple history/soft-delete trail. Contrast with the {@code enrich-*} streams,
+     * which use the {@link MaterializedViewListener} to merge a partial slice; here
+     * we want a full-document copy, so the mirror listener is the right tool.
+     * <p>
+     * Updates carry the current document via {@code fullDocument=UPDATE_LOOKUP} (the
+     * mirror skips updates that arrive without a full document).
+     */
+    private void seedAuditMirror() {
+        if (changeStreamConfigService.findById("mirror-audit") != null)
+            return;
+        logger.info("Seeding audit-mirror change stream 'mirror-audit' ({} -> {})", ORDERS, ORDERS_AUDIT);
+        Map<String, Object> attributes = new HashMap<>();
+        attributes.put(ChangeMirrorListener.ATTR_DESTINATION, ORDERS_AUDIT);
+        // Retain deleted orders in the audit trail (don't mirror the delete).
+        attributes.put(ChangeMirrorListener.ATTR_MIRROR_DELETE, "false");
+        changeStreamConfigService.save(ChangeStreamConfig.builder()
+                .id("mirror-audit")
+                .collectionName(ORDERS)
+                .runOn(ChangeStreamConfig.RunOn.BUSINESS)
+                .mode(Mode.AUTO_RECOVER)
+                .resumeStrategy(ResumeStrategy.PER_BATCH)
+                // Mirror updates too: the listener needs the current full document.
+                .fullDocument(FullDocument.UPDATE_LOOKUP)
+                // No watch pipeline: mirror every order change verbatim.
+                .pipeline(List.of())
+                .listener(ChangeMirrorListener.BEAN_NAME)
+                .attributes(attributes)
+                .enabled(true)
+                .build());
+    }
+
+    // ---------------------------------------------------------------------
+    // Fan-out rollups: ONE orders change stream -> customerSummary + productInventory
+    // via the listener's multi-target writeStages (demonstrates that capability).
+    // ---------------------------------------------------------------------
+
+    /**
+     * Seeds a <b>single</b> {@code rollup-orders} change stream that watches
+     * {@code orders} and, on each qualifying change, fans the same rollup body out
+     * to <b>two</b> targets via {@link MaterializedViewListener#ATTR_WRITE_STAGES}:
+     * <ul>
+     * <li>{@code customerSummary} — one doc per customer;</li>
+     * <li>{@code productInventory} — one doc per product.</li>
+     * </ul>
+     * The recompute is <b>scoped</b> to the single key touched by the event (the
+     * changed order's {@code customer} / {@code product}) rather than re-grouping
+     * the whole collection — see {@link #rollupStages()}. So it runs immediately
+     * (no coalescing needed); {@code whenMatched: "replace"} still writes an
+     * authoritative total for that one key. One stream instead of two — the listener
+     * runs one scoped pass per target. Uses {@link #rollupWatchFilter()} to skip
+     * enrichment-only updates and deletes.
+     */
+    private void seedRollups() {
+        if (pipelineRepository.findById("rollup-orders").isEmpty()) {
+            logger.info("Seeding pipeline template 'rollup-orders'");
+            pipelineRepository.save(PipelineTemplate.builder().name("rollup-orders")
+                    .stages(rollupStages()).build());
+        }
+        if (changeStreamConfigService.findById("rollup-orders") != null)
+            return;
+        logger.info("Seeding rollup change stream 'rollup-orders' ({} -> {} + {})",
+                ORDERS, CUSTOMER_SUMMARY, PRODUCT_INVENTORY);
+        Map<String, Object> attributes = new HashMap<>();
+        attributes.put(MaterializedViewListener.ATTR_OUTPUT_PIPELINE, "rollup-orders");
+        // Multi-target: same SCOPED body, two variable sets (customer / product).
+        attributes.put(MaterializedViewListener.ATTR_WRITE_STAGES, List.of(
+                rollupTarget("customer", CUSTOMER_SUMMARY),
+                rollupTarget("product", PRODUCT_INVENTORY)));
+        // No coalescing: each recompute is now scoped to the single changed order's
+        // customer/product (see rollupStages), so it's cheap and should run
+        // immediately — coalescing would only add latency here.
+        changeStreamConfigService.save(ChangeStreamConfig.builder()
+                .id("rollup-orders")
+                .collectionName(ORDERS)
+                .runOn(ChangeStreamConfig.RunOn.BUSINESS)
+                .mode(Mode.AUTO_RECOVER)
+                .resumeStrategy(ResumeStrategy.PER_BATCH)
+                // The scoped pipeline reads event.fullDocument.customer/product, so
+                // updates must carry the current document.
+                .fullDocument(FullDocument.UPDATE_LOOKUP)
+                // Skip enrichment-only updates AND deletes: a delete carries no
+                // fullDocument, so we can't tell which key to refresh (a deleted
+                // order's rollup self-heals when that key is next written).
+                .pipeline(rollupWatchFilter())
+                .listener(MaterializedViewListener.BEAN_NAME)
+                .attributes(attributes)
+                .enabled(true)
+                .build());
+    }
+
+    /**
+     * One {@code writeStages} entry for the scoped rollup. Binds:
+     * {@code matchField} (the core field name, e.g. {@code "customer"}),
+     * {@code matchValue} (its value from the changed order, via
+     * {@code event.fullDocument.<field>}), and {@code groupBy} (the group key,
+     * {@code "$customer"}/{@code "$product"}); then {@code $merge}s the one
+     * recomputed rollup row into the target.
+     */
+    private static Map<String, Object> rollupTarget(String field, String targetCollection) {
+        return Map.of(
+                "variables", Map.of(
+                        "matchField", field,
+                        "groupBy", "$" + field),
+                "writeStage", new Document("$merge", new Document()
+                        .append("into", targetCollection)
+                        .append("on", "_id")
+                        .append("whenMatched", "replace")
+                        .append("whenNotMatched", "insert")));
+    }
+
+    /**
+     * Shared, <b>scoped</b> rollup body. Instead of re-grouping the whole
+     * collection on every change, it recomputes only the ONE key touched by the
+     * event, parameterized by three per-target placeholders:
+     * <ul>
+     * <li>{@code {"_ph": "matchField"}} — the field to scope on ({@code "customer"}
+     * or {@code "product"});</li>
+     * <li>{@code {"_ph": "matchValue"}} — that field's value from the changed order
+     * ({@code event.fullDocument.customer} / {@code .product});</li>
+     * <li>{@code {"_ph": "groupBy"}} — the group key ({@code "$customer"} /
+     * {@code "$product"}), whose value becomes the rollup doc {@code _id}.</li>
+     * </ul>
+     * The opening {@code $match} (via {@code $getField} so the field name itself can
+     * be a placeholder) limits the scan to that key's orders — so re-running is
+     * cheap and needs no coalescing. {@code whenMatched: "replace"} still writes an
+     * authoritative total for that key (a full re-sum of its current orders), so
+     * inserts and status updates stay correct.
+     */
+    private static List<Map<String, Object>> rollupStages() {
+        // The changed order's value for the scoped field, read at runtime from the
+        // event's fullDocument (bound as a literal) via $getField so the field NAME
+        // can itself be the per-target {"_ph":"matchField"} placeholder.
+        Document matchValue = new Document("$getField", new Document()
+                .append("field", new Document("_ph", "matchField"))
+                .append("input", new Document("_ph", "event.fullDocument")));
+        return List.of(
+                // scope to just the changed order's customer (or product)
+                new Document("$match", new Document("$expr", new Document("$eq", List.of(
+                        new Document("$getField", new Document()
+                                .append("field", new Document("_ph", "matchField"))
+                                .append("input", "$$ROOT")),
+                        matchValue)))),
+                new Document("$group", new Document("_id", new Document("_ph", "groupBy"))
+                        .append("orders", new Document("$sum", 1))
+                        .append("units", new Document("$sum", "$quantity"))
+                        .append("revenue", new Document("$sum", "$amount"))),
+                new Document("$set", new Document()
+                        .append("revenue", new Document("$round", List.of("$revenue", 2)))
+                        .append("updatedAt", "$$NOW")));
+    }
+
+    // ---------------------------------------------------------------------
+    // Distribute orders by period — day/week/month in ONE $unionWith pass into a
+    // SINGLE ordersByPeriod collection (one stream, one $merge)
+    // ---------------------------------------------------------------------
+
+    private void seedPeriodBucketing() {
+        // ONE template computes all three granularities in a single pass: the day
+        // rollup, then $unionWith the week and month rollups (each re-reads orders),
+        // all tagged with their `period` and a composite _id, ending in a single
+        // terminal $merge into ordersByPeriod. One stream, one write target — no
+        // per-granularity streams.
+        if (pipelineRepository.findById("orders-by-period").isEmpty()) {
+            logger.info("Seeding pipeline template 'orders-by-period'");
+            pipelineRepository.save(PipelineTemplate.builder()
+                    .name("orders-by-period")
+                    .stages(periodBucketStages())
+                    .build());
+        }
+        if (changeStreamConfigService.findById("orders-by-period") != null)
+            return;
+        logger.info("Seeding period-bucketing change stream 'orders-by-period' ({} -> {})", ORDERS, ORDERS_BY_PERIOD);
+        Map<String, Object> attributes = new HashMap<>();
+        attributes.put(MaterializedViewListener.ATTR_OUTPUT_PIPELINE, "orders-by-period");
+        // The template is self-contained (ends in its own $merge), so no writeStage.
+        // Full-collection $unionWith rollup (day+week+month) — coalesce bursts into
+        // one recompute per ~750ms quiet window (capped at 3s).
+        attributes.put(MaterializedViewListener.ATTR_RECOMPUTE_DEBOUNCE_MS, 750);
+        attributes.put(MaterializedViewListener.ATTR_RECOMPUTE_MAX_DELAY_MS, 3000);
+        changeStreamConfigService.save(ChangeStreamConfig.builder()
+                .id("orders-by-period")
+                .collectionName(ORDERS)
+                .runOn(ChangeStreamConfig.RunOn.BUSINESS)
+                .mode(Mode.AUTO_RECOVER)
+                .resumeStrategy(ResumeStrategy.PER_BATCH)
+                // Ignore enrichment-only changes so the (expensive) full recompute
+                // does not fire when a workflow task merges a payment/fulfillment/
+                // shipping/risk slice into an order — those don't affect the
+                // period rollups (which only use core fields).
+                .pipeline(ignoreEnrichmentUpdates())
+                .listener(MaterializedViewListener.BEAN_NAME)
+                .attributes(attributes)
+                .enabled(true)
+                .build());
+    }
+
+    /**
+     * Change-stream {@code $match} for the period streams: pass every event EXCEPT
+     * an {@code update} whose changed fields are <em>all</em> enrichment fields
+     * ({@code payment}/{@code fulfillment}/{@code shipping}/{@code risk}). Order
+     * intake ({@code insert}), status edits and deletes still trigger a recompute;
+     * a workflow enrichment merge does not (it doesn't change any field the period
+     * rollups read).
+     * <p>
+     * An {@code update} event carries {@code updateDescription.updatedFields}, a
+     * document whose keys are dotted paths (e.g. {@code "payment.status"}). We keep
+     * the event when it is not an update, or when at least one updated field's
+     * top-level key is NOT an enrichment field.
+     */
+    private static List<Document> ignoreEnrichmentUpdates() {
+        // top-level key of a dotted updatedFields path, e.g. "payment.status" -> "payment"
+        Document topLevelKey = new Document("$arrayElemAt", List.of(
+                new Document("$split", List.of("$$field.k", ".")), 0));
+        // does this changed field belong to an enrichment sub-document?
+        Document isEnrichment = new Document("$in", List.of(topLevelKey, ENRICHMENT_FIELDS));
+        // the array of changed top-level keys that are NOT enrichment fields
+        Document nonEnrichmentChanges = new Document("$filter", new Document()
+                .append("input", new Document("$objectToArray",
+                        new Document("$ifNull", List.of("$updateDescription.updatedFields", new Document()))))
+                .append("as", "field")
+                .append("cond", new Document("$not", isEnrichment)));
+        return List.of(new Document("$match", new Document("$expr",
+                new Document("$or", List.of(
+                        // keep anything that isn't an update (insert/replace/delete/...)
+                        new Document("$ne", List.of("$operationType", "update")),
+                        // keep updates that touch at least one core (non-enrichment) field
+                        new Document("$gt", List.of(new Document("$size", nonEnrichmentChanges), 0)))))));
+    }
+
+    /**
+     * Change-stream {@code $match} for the SCOPED rollup stream: the enrichment
+     * filter above, PLUS drop {@code delete} events. The scoped pipeline keys off
+     * {@code event.fullDocument.customer/product}, which a delete doesn't carry, so
+     * a delete can't tell us which rollup to refresh (a deleted order's rollup
+     * self-heals when that customer/product is next written).
+     */
+    private static List<Document> rollupWatchFilter() {
+        List<Document> stages = new java.util.ArrayList<>();
+        stages.add(new Document("$match", new Document("operationType",
+                new Document("$ne", "delete"))));
+        stages.addAll(ignoreEnrichmentUpdates());
+        return stages;
+    }
+
+    /**
+     * The whole period rollup as ONE pipeline over {@code orders}: compute the daily
+     * buckets, then {@code $unionWith} the weekly and monthly buckets (each
+     * sub-pipeline re-reads {@code orders}), and finish with a single terminal
+     * {@code $merge} into {@code ordersByPeriod}. Every bucket doc is tagged with
+     * its {@code period} and keyed by a composite {@code _id = "<period>|<ISO
+     * bucketStart>"} so the three granularities coexist in one collection without
+     * colliding.
      */
     private static List<Map<String, Object>> periodBucketStages() {
+        List<Map<String, Object>> stages = new ArrayList<>(onePeriodStages("day"));
+        stages.add(new Document("$unionWith", new Document()
+                .append("coll", ORDERS)
+                .append("pipeline", onePeriodStages("week"))));
+        stages.add(new Document("$unionWith", new Document()
+                .append("coll", ORDERS)
+                .append("pipeline", onePeriodStages("month"))));
+        // single terminal write: replace each (period, bucket) doc by its _id
+        stages.add(new Document("$merge", new Document()
+                .append("into", ORDERS_BY_PERIOD)
+                .append("on", "_id")
+                .append("whenMatched", "replace")
+                .append("whenNotMatched", "insert")));
+        return stages;
+    }
+
+    /**
+     * Bucket {@code orders} for a single granularity ({@code unit} =
+     * {@code day}/{@code week}/{@code month}), producing one doc per bucket with a
+     * per-product array ({@code byProduct}) and a per-status map ({@code byStatus},
+     * e.g. {@code {PAID: 3, SHIPPED: 1}}). The doc {@code _id} is
+     * {@code "<unit>|<ISO bucketStart>"} and it carries a {@code period} field.
+     * No write stage — the caller composes these via {@code $unionWith} and appends
+     * one terminal {@code $merge}.
+     */
+    private static List<Map<String, Object>> onePeriodStages(String unit) {
         return List.of(
-                // 1) truncate createdAt to the configured unit (day/week/month)
+                // 1) truncate createdAt to this unit
                 new Document("$addFields", new Document("bucketStart",
                         new Document("$dateTrunc", new Document()
                                 .append("date", "$createdAt")
-                                .append("unit", new Document("_ph", "period"))))),
+                                .append("unit", unit)))),
                 // 2) group at the finest grain: bucket + product + status
                 new Document("$group", new Document()
                         .append("_id", new Document("bucketStart", "$bucketStart")
@@ -285,7 +541,6 @@ public class ConsolidationDemoSeeder implements ApplicationRunner {
                         .append("orders", new Document("$sum", "$orders"))
                         .append("revenue", new Document("$sum", "$revenue"))
                         .append("units", new Document("$sum", "$units"))
-                        // carry the per-status counts for this (bucket, product) up
                         .append("statuses", new Document("$push", new Document()
                                 .append("k", "$_id.status")
                                 .append("v", "$orders")))),
@@ -300,27 +555,25 @@ public class ConsolidationDemoSeeder implements ApplicationRunner {
                                 .append("product", "$_id.product")
                                 .append("orders", "$orders")
                                 .append("revenue", "$revenue")))
-                        // concat every product's status pairs into one flat array
                         .append("statusPairs", new Document("$push", "$statuses"))),
-                // 4) shape the output: the truncated date is the natural _id (one
-                //    period per collection), keep bucketStart + a period tag, build
-                //    byStatus by summing the flattened status pairs, stamp the time
+                // 4) shape the output: composite _id "<unit>|<ISO bucketStart>",
+                //    period tag, byStatus map, timestamp
                 new Document("$addFields", new Document()
-                        .append("period", new Document("_ph", "period"))
+                        .append("period", unit)
                         .append("bucketStart", "$_id")
+                        .append("_id", new Document("$concat", List.of(unit + "|",
+                                new Document("$dateToString", new Document()
+                                        .append("date", "$_id")
+                                        .append("format", "%Y-%m-%dT%H:%M:%S.%LZ")))))
                         .append("revenue", new Document("$round", List.of("$revenue", 2)))
                         .append("avgOrderValue", new Document("$round", List.of(
                                 new Document("$divide", List.of("$revenue",
                                         new Document("$max", List.of("$orders", 1)))),
                                 2)))
-                        // flatten [[{k,v}...],[{k,v}...]] -> [{k,v}...], sum per status
-                        // (a status can appear under several products), then to a map
                         .append("byStatus", buildByStatus())
                         .append("updatedAt", "$$NOW")),
                 // drop the interim status-aggregation field from the output
                 new Document("$project", new Document("statusPairs", 0)));
-        // NOTE: no terminal $merge here — each stream appends its own writeStage
-        // (into ordersByDay/ordersByWeek/ordersByMonth) via ATTR_WRITE_STAGE.
     }
 
     /**
