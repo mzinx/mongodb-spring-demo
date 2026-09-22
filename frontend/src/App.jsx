@@ -5,8 +5,10 @@ import OrdersPanel from './components/OrdersPanel.jsx'
 import DashboardPanel from './components/DashboardPanel.jsx'
 import LiveEventsPanel from './components/LiveEventsPanel.jsx'
 import MessagingPanel from './components/MessagingPanel.jsx'
+import KnowledgePanel from './components/KnowledgePanel.jsx'
+import ChatWidget from './components/ChatWidget.jsx'
 
-const TABS = ['Dashboard', 'Orders', 'Messaging']
+const TABS = ['Dashboard', 'Orders', 'Messaging', 'Knowledge']
 const CHANNELS = ['/sync', '/cmd']
 const MAX_EVENTS = 300
 
@@ -252,8 +254,12 @@ export default function App() {
         {tab === 'Messaging' && (
           <MessagingPanel events={events} me={me} activeSessions={activeSessions} addEvent={addEvent} />
         )}
+        {tab === 'Knowledge' && <KnowledgePanel />}
         <LiveEventsPanel events={events} onClear={() => setEvents([])} />
       </main>
+
+      {/* Floating RAG chatbot, available on every tab. */}
+      <ChatWidget />
     </div>
   )
 }

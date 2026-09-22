@@ -20,6 +20,9 @@
 	<properties>
 		<!-- Not managed by the Spring Boot 4 BOM, so pin explicitly. -->
 		<spring-session-data-mongodb.version>3.4.2</spring-session-data-mongodb.version>
+		<!-- RAG chatbot dependencies (not managed by the Spring Boot BOM). -->
+		<anthropic-sdk.version>2.9.0</anthropic-sdk.version>
+		<tika.version>3.2.1</tika.version>
 	</properties>
 
 	<dependencies>
@@ -77,6 +80,32 @@
 			<artifactId>lombok</artifactId>
 			<version>1.18.38</version>
 			<scope>provided</scope>
+		</dependency>
+
+		<!-- ============================ RAG chatbot ============================ -->
+
+		<!-- Apache Tika: extracts plain text from uploaded PDF and Word (.doc/.docx)
+		     documents so their content can be chunked and ingested into the
+		     knowledge-base collection. tika-parsers-standard-package pulls in the
+		     PDFBox / POI parsers for these formats. -->
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-core</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-parsers-standard-package</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+
+		<!-- Anthropic Java SDK: powers the chat completion side of RAG. Retrieval
+		     (embeddings) is handled server-side by Atlas Vector Search automatic
+		     embedding (Voyage AI), so the app never calls an embedding API itself. -->
+		<dependency>
+			<groupId>com.anthropic</groupId>
+			<artifactId>anthropic-java</artifactId>
+			<version>${anthropic-sdk.version}</version>
 		</dependency>
 	</dependencies>
 

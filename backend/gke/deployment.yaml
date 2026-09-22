@@ -20,6 +20,8 @@ spec:
         env:
         - name: MONGODB_URI
           value: "${MONGODB_URI}"
+        - name: OLLAMA_BASE_URL
+          value: "${OLLAMA_BASE_URL}"
         - name: HOSTNAME
           valueFrom:
             fieldRef:
