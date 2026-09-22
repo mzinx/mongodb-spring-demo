@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import com.mongodb.client.model.changestream.FullDocument;
@@ -68,6 +69,9 @@ import com.mzinx.mongodb.sink.listener.MaterializedViewListener;
  * {@code com.mzinx.demo.workflow.WorkflowService}.
  */
 @Component
+// Runs after VectorIndexInitializer (@Order(0)) so the vector-index bootstrap is
+// never blocked by this seeder's change-stream work.
+@Order(10)
 public class ConsolidationDemoSeeder implements ApplicationRunner {
 
     /** The single, polymorphic order collection every source writes into. */
