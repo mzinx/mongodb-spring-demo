@@ -1,5 +1,6 @@
 package com.mzinx.demo.rag;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -80,10 +81,21 @@ public class ChatService {
             return;
         }
         try {
+            // Bound the Anthropic HTTP call with an explicit request timeout so a
+            // slow/complex completion fails cleanly instead of hanging forever.
+            // Kept in line with the OpenAI-compatible read timeout so the backend
+            // is always the innermost timeout in the request chain.
+            Duration requestTimeout = Duration.ofSeconds(anthropicProvider.getTimeoutSeconds());
             this.anthropic = anthropicProvider.hasKey()
-                    ? AnthropicOkHttpClient.builder().apiKey(anthropicProvider.getApiKey()).build()
-                    : AnthropicOkHttpClient.fromEnv();
-            log.info("Anthropic client initialised.");
+                    ? AnthropicOkHttpClient.builder()
+                            .apiKey(anthropicProvider.getApiKey())
+                            .timeout(requestTimeout)
+                            .build()
+                    : AnthropicOkHttpClient.builder()
+                            .fromEnv()
+                            .timeout(requestTimeout)
+                            .build();
+            log.info("Anthropic client initialised (request timeout {}s).", requestTimeout.toSeconds());
         } catch (RuntimeException e) {
             log.warn("Anthropic client not initialised ({}); provider hidden.", e.getMessage());
             this.anthropic = null;

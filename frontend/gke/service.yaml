@@ -4,6 +4,10 @@ metadata:
   name: ${APP_NAME}
   labels:
     app: ${APP_NAME}
+  annotations:
+    # Attach the BackendConfig so the GCLB backend timeout is long enough for
+    # slow RAG chat completions (default is ~30s).
+    cloud.google.com/backend-config: '{"default": "${APP_NAME}-backend-config"}'
 spec:
   type: NodePort
   selector:
