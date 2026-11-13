@@ -1,0 +1,15 @@
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: ${APP_NAME}-backend-config
+spec:
+  # Default GCLB backend timeout is ~30s, which cuts off long RAG chat
+  # completions proxied through the frontend nginx (/api/chat/ask). Raise it
+  # above the nginx proxy_read_timeout (180s) and the backend LLM read
+  # timeout (120s) so the whole request chain can complete.
+  timeoutSec: 300
+  healthCheck:
+    checkIntervalSec: 15
+    port: 80
+    type: HTTP
+    requestPath: /
